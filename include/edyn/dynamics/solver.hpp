@@ -67,7 +67,7 @@ private:
     entity_set m_new_edges;
     std::unique_ptr<solver_context> m_context;
     size_t m_num_constraint_groups;
-    static const size_t m_max_group_size {256};
+    size_t m_max_group_size {256};
 };
 
 template<typename It>

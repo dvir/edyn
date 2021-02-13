@@ -205,13 +205,13 @@ void solver::init_new_nodes() {
     while (!m_new_nodes.empty()) {
         // Traverse graph trying to find another node which is already in a group
         // then assign that group to all nodes visited so far.
-        std::vector<entt::entity> to_visit;
-        to_visit.push_back(*m_new_nodes.begin());
+        entity_set to_visit;
+        to_visit.insert(*m_new_nodes.begin());
         entity_set connected;
 
         while (!to_visit.empty()) {
-            auto entity = to_visit.back();
-            to_visit.pop_back();
+            auto entity = *to_visit.begin();
+            to_visit.erase(entity);
             m_new_nodes.erase(entity);
             connected.insert(entity);
 
@@ -244,7 +244,7 @@ void solver::init_new_nodes() {
                     connected.clear();
                 } else if (m_new_nodes.count(other_entity) > 0) {
                     // Add entity to be visited if it has not been visited yet.
-                    to_visit.push_back(other_entity);
+                    to_visit.insert(other_entity);
                 }
             }
         }
@@ -441,7 +441,8 @@ std::pair<entity_set, entity_set> split_nodes(
                 auto &edge_node = node_view.get(edge_entity);
                 EDYN_ASSERT(edge_node.entities.size() == 2);
 
-                // Initialize other entity with current entity to handle cycles.
+                // Initialize other entity with current entity to handle nodes
+                // that are connected to themselves.
                 auto other_entity = entity;
 
                 for (auto e : edge_node.entities) {
@@ -470,6 +471,9 @@ std::pair<entity_set, entity_set> split_nodes(
     } else {
         subsetB = other_subsets[0];
     }
+
+    // TODO: balance partition to minimize the number of edges in the seam, e.g.
+    // using the Kernighan-Lin algorithm.
 
     const auto groupA = group_value;
     const auto groupB = group_value + 1;
