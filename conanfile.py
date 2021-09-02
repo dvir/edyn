@@ -9,7 +9,7 @@ class EdynConan(ConanFile):
     url = "https://github.com/xissburg/edyn"
     description = "Edyn is a real-time physics engine organized as an ECS. "
     topics = ("game-development", "physics-engine", "ecs", "entity-component-system")
-    settings = "os", "compiler", "build_type", "arch"
+    settings = "cppstd", "os", "compiler", "build_type", "arch"
     options = {"shared": [True, False], "fPIC": [True, False]}
     default_options = {"shared": False, "fPIC": True}
     generators = "cmake", "cmake_find_package", "cmake_paths"
@@ -18,6 +18,7 @@ class EdynConan(ConanFile):
     requires = "entt/3.8.0"
 
     def config_options(self):
+        self.settings.compiler.cppstd = "17"
         if self.settings.os == "Windows":
             del self.options.fPIC
 
@@ -36,7 +37,20 @@ class EdynConan(ConanFile):
 
     def package(self):
         self.copy(pattern="LICENSE", dst="licenses")
-        self.copy("edyn", dst="include", src="include", keep_path=True)
+        for pattern in ("*.h", "*.hpp"):
+            self.copy(pattern, dst="include", src="include")
+            self.copy(pattern, dst="include", src="edyn/include")
+        for pattern in ("*.a", "*.so", "*.dylib", "*.dll"):
+            self.copy(pattern, dst="lib", keep_path=False)
 
     def package_info(self):
-        self.cpp_info.libs = ["edyn"]
+        if self.settings.os == "Windows":
+            self.cpp_info.libs = ["winmm"]
+        else:
+            self.cpp_info.libs = ["pthread", "dl"]
+        self.cpp_info.libs.append("Edyn")
+        self.cpp_info.names["cmake_find_package"] = "Edyn"
+        self.cpp_info.names["cmake_find_package_multi"] = "Edyn"
+
+    def validate(self):
+        tools.check_min_cppstd(self, "17")
