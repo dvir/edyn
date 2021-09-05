@@ -3,12 +3,13 @@ from conans import ConanFile, CMake, tools
 
 class EdynConan(ConanFile):
     name = "edyn"
-    version = "0.1.0"
+    version = "0.2.0"
     license = "MIT"
     author = "xissburg <xissburg@xissburg.com>"
     url = "https://github.com/xissburg/edyn"
     description = "Edyn is a real-time physics engine organized as an ECS. "
-    topics = ("game-development", "physics-engine", "ecs", "entity-component-system")
+    topics = ("game-development", "physics-engine", "ecs",
+              "entity-component-system")
     settings = "cppstd", "os", "compiler", "build_type", "arch"
     options = {"shared": [True, False], "fPIC": [True, False]}
     default_options = {"shared": False, "fPIC": True}
@@ -46,7 +47,7 @@ class EdynConan(ConanFile):
     def package_info(self):
         if self.settings.os == "Windows":
             self.cpp_info.libs = ["winmm"]
-        else:
+        elif self.settings.os == "Linux" or self.settings.os == "Macos":
             self.cpp_info.libs = ["pthread", "dl"]
         self.cpp_info.libs.append("Edyn")
         self.cpp_info.names["cmake_find_package"] = "Edyn"
