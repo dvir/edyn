@@ -15,6 +15,7 @@
 #include "edyn/parallel/message_queue.hpp"
 #include "edyn/parallel/entity_graph.hpp"
 #include "edyn/util/entity_map.hpp"
+#include "edyn/util/entity_set.hpp"
 
 namespace edyn {
 
@@ -71,6 +72,7 @@ class island_worker final {
     void merge_islands(const std::vector<entt::entity> &island_entities,
                        const std::vector<entt::entity> &new_nodes,
                        const std::vector<entt::entity> &new_edges);
+    void split_islands();
 
 public:
     island_worker(entt::entity island_entity, const settings &settings,
@@ -93,6 +95,7 @@ public:
     void on_construct_graph_edge(entt::registry &, entt::entity);
     void on_destroy_graph_node(entt::registry &, entt::entity);
     void on_destroy_graph_edge(entt::registry &, entt::entity);
+    void on_destroy_island_resident(entt::registry &, entt::entity);
     void on_construct_polyhedron_shape(entt::registry &, entt::entity);
     void on_construct_compound_shape(entt::registry &, entt::entity);
     void on_destroy_rotated_mesh_list(entt::registry &, entt::entity);
@@ -128,7 +131,8 @@ private:
     std::unique_ptr<island_delta_builder> m_delta_builder;
     bool m_importing_delta;
     bool m_destroying_node;
-    bool m_topology_changed;
+
+    entity_set m_islands_to_split;
 
     std::vector<entt::entity> m_new_graph_nodes;
     std::vector<entt::entity> m_new_graph_edges;

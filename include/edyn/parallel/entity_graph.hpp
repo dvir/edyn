@@ -148,6 +148,11 @@ public:
     template<typename Func>
     void traverse_connecting_nodes(index_type start_node_index, Func func);
 
+    template<typename VisitNodeFunc, typename VisitEdgeFunc>
+    void traverse_connecting_nodes_and_edges(index_type start_node_index,
+                                             VisitNodeFunc visitNodeFunc,
+                                             VisitEdgeFunc visitEdgeFunc);
+
     void optimize_if_needed();
 
 private:
@@ -349,6 +354,64 @@ void entity_graph::traverse_connecting_nodes(index_type start_node_index, Func f
 
         while (adj_index != null_index) {
             auto &adj = m_adjacencies[adj_index];
+            auto neighbor_index = adj.node_index;
+
+            if (!m_visited[neighbor_index]) {
+                // Insert to beginning for a breadth-first traversal.
+                to_visit.insert(to_visit.begin(), neighbor_index);
+                // Set as visited to avoid adding it to `to_visit` more than once.
+                m_visited[neighbor_index] = true;
+            }
+
+            adj_index = adj.next;
+        }
+    }
+}
+
+template<typename VisitNodeFunc, typename VisitEdgeFunc>
+void entity_graph::traverse_connecting_nodes_and_edges(index_type start_node_index,
+                                                       VisitNodeFunc visitNodeFunc,
+                                                       VisitEdgeFunc visitEdgeFunc) {
+    m_visited.assign(m_nodes.size(), false);
+    m_visited_edges.assign(m_edges.size(), false);
+
+    std::vector<index_type> to_visit;
+    to_visit.push_back(start_node_index);
+
+    while (!to_visit.empty()) {
+        auto node_index = to_visit.back();
+        to_visit.pop_back();
+
+        m_visited[node_index] = true;
+        const auto &node = m_nodes[node_index];
+        EDYN_ASSERT(node.entity != entt::null);
+
+        // Ignore non-connecting nodes.
+        if (node.non_connecting) {
+            continue;
+        }
+
+        visitNodeFunc(node_index);
+
+        // Add neighbors to be visited.
+        auto adj_index = node.adjacency_index;
+
+        while (adj_index != null_index) {
+            auto &adj = m_adjacencies[adj_index];
+            auto edge_index = adj.edge_index;
+
+            while (edge_index != null_index) {
+                auto &edge = m_edges[edge_index];
+
+                if (!m_visited_edges[edge_index]) {
+                    EDYN_ASSERT(edge.entity != entt::null);
+                    visitEdgeFunc(edge_index);
+                    m_visited_edges[edge_index] = true;
+                }
+
+                edge_index = edge.next;
+            }
+
             auto neighbor_index = adj.node_index;
 
             if (!m_visited[neighbor_index]) {

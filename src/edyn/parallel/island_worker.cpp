@@ -64,7 +64,6 @@ island_worker::island_worker(entt::entity island_entity, const settings &setting
     , m_delta_builder((*settings.make_island_delta_builder)())
     , m_importing_delta(false)
     , m_destroying_node(false)
-    , m_topology_changed(false)
 {
     m_registry.set<entity_graph>();
     m_registry.set<edyn::settings>(settings);
@@ -91,6 +90,7 @@ void island_worker::init() {
     m_registry.on_construct<graph_edge>().connect<&island_worker::on_construct_graph_edge>(*this);
     m_registry.on_destroy<graph_node>().connect<&island_worker::on_destroy_graph_node>(*this);
     m_registry.on_destroy<graph_edge>().connect<&island_worker::on_destroy_graph_edge>(*this);
+    m_registry.on_destroy<island_resident>().connect<&island_worker::on_destroy_island_resident>(*this);
     m_registry.on_destroy<contact_manifold>().connect<&island_worker::on_destroy_contact_manifold>(*this);
     m_registry.on_destroy<contact_point>().connect<&island_worker::on_destroy_contact_point>(*this);
     m_registry.on_construct<polyhedron_shape>().connect<&island_worker::on_construct_polyhedron_shape>(*this);
@@ -174,10 +174,6 @@ void island_worker::on_destroy_contact_point(entt::registry &registry, entt::ent
 }
 
 void island_worker::on_construct_graph_node(entt::registry &registry, entt::entity entity) {
-    // It is possible that a new connected component appears in the graph when
-    // a new node is created.
-    m_topology_changed = true;
-
     m_new_graph_nodes.push_back(entity);
 
     // If this node is being created as a result of importing a delta, then it's
@@ -238,8 +234,15 @@ void island_worker::on_destroy_graph_edge(entt::registry &registry, entt::entity
     if (m_entity_map.has_loc(entity)) {
         m_entity_map.erase_loc(entity);
     }
+}
 
-    m_topology_changed = true;
+void island_worker::on_destroy_island_resident(entt::registry &registry, entt::entity entity) {
+    auto &resident = registry.get<island_resident>(entity);
+    auto &island = registry.get<edyn::island>(resident.island_entity);
+    // Is this a node or an edge? Idk
+    island.nodes.erase(entity);
+    island.edges.erase(entity);
+    m_islands_to_split.insert(resident.island_entity);
 }
 
 void island_worker::on_construct_polyhedron_shape(entt::registry &registry, entt::entity entity) {
@@ -553,6 +556,10 @@ void island_worker::begin_step() {
         (*settings.external_system_pre_step)(m_registry);
     }
 
+    // Perform splits after processing messages from coodinator and running
+    // external logic, which could've destroyed nodes or edges.
+    split_islands();
+
     init_new_nodes_and_edges();
 
     // Initialize new shapes before new manifolds because it'll perform
@@ -602,6 +609,11 @@ void island_worker::finish_broadphase() {
 
 bool island_worker::run_narrowphase() {
     EDYN_ASSERT(m_state == state::narrowphase);
+
+    // Narrow-phase is run right after broad-phase, where manifolds could have
+    // been destroyed, potentially causing islands to split. Thus, split any
+    // pending islands before proceeding.
+    split_islands();
 
     if (m_nphase.parallelizable()) {
         m_state = state::narrowphase_async;
@@ -669,12 +681,6 @@ void island_worker::finish_step() {
     sync();
 
     m_state = state::step;
-
-    if (m_topology_changed) {
-        // TODO: Check if islands that changed have been split.
-
-        m_topology_changed = false;
-    }
 }
 
 void island_worker::reschedule_now() {
@@ -924,6 +930,75 @@ void island_worker::merge_islands(const std::vector<entt::entity> &island_entiti
 
     // Destroy empty islands.
     m_registry.destroy(other_island_entities.begin(), other_island_entities.end());
+}
+
+void island_worker::split_islands() {
+    if (m_islands_to_split.empty()) return;
+
+    auto island_view = m_registry.view<island>();
+    auto node_view = m_registry.view<graph_node>();
+    auto resident_view = m_registry.view<island_resident>();
+    auto &graph = m_registry.ctx<entity_graph>();
+    auto connected_nodes = std::vector<entt::entity>{};
+
+    for (auto island_entity : m_islands_to_split) {
+        auto &island = island_view.get<edyn::island>(island_entity);
+
+        if (island.nodes.empty()) {
+            EDYN_ASSERT(island.edges.empty());
+            m_registry.destroy(island_entity);
+            continue;
+        }
+
+        // Traverse graph starting at any of the island's nodes and check if the
+        // collected nodes of the connected components match the island's nodes.
+        connected_nodes.clear();
+        auto start_node = node_view.get<graph_node>(*island.nodes.begin());
+
+        graph.traverse_connecting_nodes(start_node.node_index, [&] (auto node_index) {
+            auto node_entity = graph.node_entity(node_index);
+            connected_nodes.push_back(node_entity);
+        });
+
+        if (island.nodes.size() == connected_nodes.size()) {
+            continue;
+        }
+
+        // Traverse graph starting at the remaining nodes to find the other
+        // connected components and create new islands for them.
+        auto all_nodes = island.nodes;
+
+        for (auto entity : connected_nodes) {
+            all_nodes.erase(entity);
+        }
+
+        while (!all_nodes.empty()) {
+            connected_nodes.clear();
+
+            auto island_entity = m_registry.create();
+            auto &island = m_registry.emplace<edyn::island>(island_entity);
+            auto start_node = node_view.get<graph_node>(*all_nodes.begin());
+
+            graph.traverse_connecting_nodes_and_edges(start_node.node_index,
+                [&] (auto node_index) {
+                    auto node_entity = graph.node_entity(node_index);
+                    island.nodes.insert(node_entity);
+                    resident_view.get<edyn::island_resident>(node_entity).island_entity = island_entity;
+
+                    connected_nodes.push_back(node_entity);
+                }, [&] (auto edge_index) {
+                    auto edge_entity = graph.edge_entity(edge_index);
+                    island.edges.insert(edge_entity);
+                    resident_view.get<edyn::island_resident>(edge_entity).island_entity = island_entity;
+                });
+
+            for (auto entity : connected_nodes) {
+                all_nodes.erase(entity);
+            }
+        }
+    }
+
+    m_islands_to_split.clear();
 }
 
 void island_worker::init_new_imported_contact_manifolds() {
