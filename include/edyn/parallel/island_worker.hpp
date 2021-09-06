@@ -55,6 +55,7 @@ class island_worker final {
     void maybe_reschedule();
     void reschedule_later();
     void do_terminate();
+    void init_new_nodes_and_edges();
     void init_new_imported_contact_manifolds();
     void init_new_shapes();
     void insert_remote_node(entt::entity remote_entity);
@@ -65,6 +66,12 @@ class island_worker final {
     void sync();
     void sync_dirty();
     void update();
+    void insert_to_island(entt::entity island_entity,
+                          const std::vector<entt::entity> &nodes,
+                          const std::vector<entt::entity> &edges);
+    void merge_islands(const std::vector<entt::entity> &island_entities,
+                       const std::vector<entt::entity> &new_nodes,
+                       const std::vector<entt::entity> &new_edges);
 
 public:
     island_worker(entt::entity island_entity, const settings &settings,
@@ -84,6 +91,7 @@ public:
     void on_destroy_contact_manifold(entt::registry &, entt::entity);
     void on_destroy_contact_point(entt::registry &, entt::entity);
     void on_construct_graph_node(entt::registry &, entt::entity);
+    void on_construct_graph_edge(entt::registry &, entt::entity);
     void on_destroy_graph_node(entt::registry &, entt::entity);
     void on_destroy_graph_edge(entt::registry &, entt::entity);
     void on_construct_polyhedron_shape(entt::registry &, entt::entity);
@@ -128,6 +136,9 @@ private:
     bool m_pending_split_calculation;
     double m_calculate_split_delay;
     double m_calculate_split_timestamp;
+
+    std::vector<entt::entity> m_new_graph_nodes;
+    std::vector<entt::entity> m_new_graph_edges;
 
     std::vector<entt::entity> m_new_imported_contact_manifolds;
     std::vector<entt::entity> m_new_polyhedron_shapes;

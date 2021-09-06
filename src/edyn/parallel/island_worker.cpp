@@ -32,6 +32,7 @@
 #include "edyn/context/settings.hpp"
 #include <memory>
 #include <variant>
+#include <set>
 #include <entt/entity/registry.hpp>
 
 namespace edyn {
@@ -91,6 +92,7 @@ island_worker::~island_worker() = default;
 
 void island_worker::init() {
     m_registry.on_construct<graph_node>().connect<&island_worker::on_construct_graph_node>(*this);
+    m_registry.on_construct<graph_edge>().connect<&island_worker::on_construct_graph_edge>(*this);
     m_registry.on_destroy<graph_node>().connect<&island_worker::on_destroy_graph_node>(*this);
     m_registry.on_destroy<graph_edge>().connect<&island_worker::on_destroy_graph_edge>(*this);
     m_registry.on_destroy<contact_manifold>().connect<&island_worker::on_destroy_contact_manifold>(*this);
@@ -184,6 +186,28 @@ void island_worker::on_construct_graph_node(entt::registry &registry, entt::enti
     // It is possible that a new connected component appears in the graph when
     // a new node is created.
     m_topology_changed = true;
+
+    m_new_graph_nodes.push_back(entity);
+
+    // If this node is being created as a result of importing a delta, then it's
+    // expected to already have an `island_resident` component assigned.
+    if (!m_importing_delta) {
+        if (registry.any_of<procedural_tag>(entity)) {
+            registry.emplace<island_resident>(entity);
+        } else {
+            registry.emplace<multi_island_resident>(entity);
+        }
+    }
+}
+
+void island_worker::on_construct_graph_edge(entt::registry &registry, entt::entity entity) {
+    m_new_graph_edges.push_back(entity);
+
+    if (!m_importing_delta) {
+        // Assuming this graph edge is a constraint or contact manifold, which
+        // are always procedural, thus can only reside in one island.
+        registry.emplace<island_resident>(entity);
+    }
 }
 
 void island_worker::on_destroy_graph_node(entt::registry &registry, entt::entity entity) {
@@ -538,6 +562,8 @@ void island_worker::begin_step() {
         (*settings.external_system_pre_step)(m_registry);
     }
 
+    init_new_nodes_and_edges();
+
     // Initialize new shapes before new manifolds because it'll perform
     // collision detection for the new manifolds.
     init_new_shapes();
@@ -748,6 +774,203 @@ void island_worker::reschedule() {
     if (reschedule_count > 0) return;
 
     job_dispatcher::global().async(m_this_job);
+}
+
+void island_worker::init_new_nodes_and_edges() {
+    if (m_new_graph_nodes.empty() && m_new_graph_edges.empty()) return;
+
+    auto &graph = m_registry.ctx<entity_graph>();
+    auto node_view = m_registry.view<graph_node>();
+    auto edge_view = m_registry.view<graph_edge>();
+    std::set<entity_graph::index_type> procedural_node_indices;
+
+    for (auto entity : m_new_graph_nodes) {
+        if (m_registry.any_of<procedural_tag>(entity)) {
+            auto &node = node_view.get<graph_node>(entity);
+            procedural_node_indices.insert(node.node_index);
+        }
+    }
+
+    for (auto edge_entity : m_new_graph_edges) {
+        auto &edge = edge_view.get<graph_edge>(edge_entity);
+        auto node_entities = graph.edge_node_entities(edge.edge_index);
+
+        if (m_registry.any_of<procedural_tag>(node_entities.first)) {
+            auto &node = node_view.get<graph_node>(node_entities.first);
+            procedural_node_indices.insert(node.node_index);
+        }
+
+        if (m_registry.any_of<procedural_tag>(node_entities.second)) {
+            auto &node = node_view.get<graph_node>(node_entities.second);
+            procedural_node_indices.insert(node.node_index);
+        }
+    }
+
+    m_new_graph_nodes.clear();
+    m_new_graph_edges.clear();
+
+    if (procedural_node_indices.empty()) return;
+
+    std::vector<entt::entity> connected_nodes;
+    std::vector<entt::entity> connected_edges;
+    std::vector<entt::entity> island_entities;
+    auto resident_view = m_registry.view<island_resident>();
+    auto procedural_view = m_registry.view<procedural_tag>();
+
+    graph.reach(
+        procedural_node_indices.begin(), procedural_node_indices.end(),
+        [&] (entt::entity entity) { // visitNodeFunc
+            // We only visit procedural nodes.
+            EDYN_ASSERT(procedural_view.contains(entity));
+
+            if (resident_view.get<island_resident>(entity).island_entity == entt::null) {
+                connected_nodes.push_back(entity);
+            }
+        },
+        [&] (entt::entity entity) { // visitEdgeFunc
+            auto &edge_resident = resident_view.get<island_resident>(entity);
+
+            if (edge_resident.island_entity == entt::null) {
+                connected_edges.push_back(entity);
+            } else {
+                auto contains_island = vector_contains(island_entities, edge_resident.island_entity);
+
+                if (!contains_island) {
+                    island_entities.push_back(edge_resident.island_entity);
+                }
+            }
+        },
+        [&] (entity_graph::index_type node_index) { // shouldVisitFunc
+            auto other_entity = graph.node_entity(node_index);
+
+            if (!procedural_view.contains(other_entity)) {
+                return false;
+            }
+
+            // Visit neighbor node if it's not in an island yet.
+            auto &other_resident = resident_view.get<island_resident>(other_entity);
+
+            if (other_resident.island_entity == entt::null) {
+                return true;
+            }
+
+            auto contains_island = vector_contains(island_entities, other_resident.island_entity);
+
+            // Collect islands involved in this connected component.
+            if (!contains_island) {
+                island_entities.push_back(other_resident.island_entity);
+            }
+
+            bool continue_visiting = false;
+
+            // Visit neighbor if it contains an edge that is not in an island yet.
+            graph.visit_edges(node_index, [&] (entt::entity edge_entity) {
+                if (resident_view.get<island_resident>(edge_entity).island_entity == entt::null) {
+                    continue_visiting = true;
+                }
+            });
+
+            return continue_visiting;
+        },
+        [&] () { // connectedComponentFunc
+            if (island_entities.size() <= 1) {
+                // Assign island to the residents.
+                auto island_entity = entt::entity{};
+
+                if (island_entities.empty()) {
+                    island_entity = m_registry.create();
+                    m_registry.emplace<island>(island_entity);
+                } else {
+                    island_entity = island_entities.front();
+                }
+
+                insert_to_island(island_entity, connected_nodes, connected_edges);
+            } else {
+                // Islands have to be merged.
+                merge_islands(island_entities, connected_nodes, connected_edges);
+            }
+
+            connected_nodes.clear();
+            connected_edges.clear();
+            island_entities.clear();
+        });
+}
+
+void island_worker::insert_to_island(entt::entity island_entity,
+                                     const std::vector<entt::entity> &nodes,
+                                     const std::vector<entt::entity> &edges) {
+    auto resident_view = m_registry.view<island_resident>();
+
+    for (auto entity : nodes) {
+        resident_view.get<island_resident>(entity).island_entity = island_entity;
+    }
+
+    for (auto entity : edges) {
+        resident_view.get<island_resident>(entity).island_entity = island_entity;
+    }
+
+    auto &island = m_registry.get<edyn::island>(island_entity);
+    island.nodes.insert(nodes.begin(), nodes.end());
+    island.edges.insert(edges.begin(), edges.end());
+}
+
+void island_worker::merge_islands(const std::vector<entt::entity> &island_entities,
+                                  const std::vector<entt::entity> &new_nodes,
+                                  const std::vector<entt::entity> &new_edges) {
+    EDYN_ASSERT(island_entities.size() > 1);
+
+    // Pick biggest island and move the other entities into it.
+    entt::entity island_entity;
+    size_t biggest_size = 0;
+    auto island_view = m_registry.view<island>();
+
+    for (auto entity : island_entities) {
+        auto &island = island_view.get<edyn::island>(entity);
+        auto size = island.nodes.size() + island.edges.size();
+
+        if (size > biggest_size) {
+            biggest_size = size;
+            island_entity = entity;
+        }
+    }
+
+    island_entity = island_entities.front();
+
+    auto other_island_entities = island_entities;
+    vector_erase(other_island_entities, island_entity);
+
+    auto all_nodes = new_nodes;
+    auto all_edges = new_edges;
+
+    for (auto other_island_entity : other_island_entities) {
+        auto &island = island_view.get<edyn::island>(other_island_entity);
+        all_nodes.insert(all_nodes.end(), island.nodes.begin(), island.nodes.end());
+        all_edges.insert(all_edges.end(), island.edges.begin(), island.edges.end());
+    }
+
+    // Entity might be coming from a sleeping island. Remove `sleeping_tag`s
+    // since the island is supposed to be awake after a merge.
+    for (auto entity : all_nodes) {
+        m_registry.remove<sleeping_tag>(entity);
+    }
+
+    for (auto entity : all_edges) {
+        m_registry.remove<sleeping_tag>(entity);
+
+        if (auto *manifold = m_registry.try_get<contact_manifold>(entity)) {
+            auto num_points = manifold->num_points();
+
+            for (size_t i = 0; i < num_points; ++i) {
+                auto contact_entity = manifold->point[i];
+                m_registry.remove<sleeping_tag>(contact_entity);
+            }
+        }
+    }
+
+    insert_to_island(island_entity, all_nodes, all_edges);
+
+    // Destroy empty islands.
+    m_registry.destroy(other_island_entities.begin(), other_island_entities.end());
 }
 
 void island_worker::init_new_imported_contact_manifolds() {

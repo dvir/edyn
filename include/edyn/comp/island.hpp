@@ -12,7 +12,8 @@ namespace edyn {
  * usually through constraints.
  */
 struct island {
-
+    entity_set nodes;
+    entity_set edges;
 };
 
 /**
