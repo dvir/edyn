@@ -979,7 +979,7 @@ void island_worker::split_islands() {
             auto &island = m_registry.emplace<edyn::island>(island_entity);
             auto start_node = node_view.get<graph_node>(*all_nodes.begin());
 
-            graph.traverse_connecting_nodes_and_edges(start_node.node_index,
+            graph.traverse_connecting_nodes(start_node.node_index,
                 [&] (auto node_index) {
                     auto node_entity = graph.node_entity(node_index);
                     island.nodes.insert(node_entity);
