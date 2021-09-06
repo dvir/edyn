@@ -37,7 +37,6 @@ class island_coordinator final {
     entt::entity merge_islands(const std::vector<entt::entity> &island_entities,
                                const std::vector<entt::entity> &new_nodes,
                                const std::vector<entt::entity> &new_edges);
-    void wake_up_island(entt::entity);
     void refresh_dirty_entities();
     void sync();
 

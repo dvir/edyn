@@ -675,12 +675,7 @@ void island_coordinator::sync() {
         auto &ctx = pair.second;
 
         if (!ctx->delta_empty()) {
-            auto needs_wakeup = ctx->delta_needs_wakeup();
             ctx->send_delta();
-
-            if (needs_wakeup && m_registry->any_of<sleeping_tag>(island_entity)) {
-                ctx->send<msg::wake_up_island>();
-            }
         }
 
         ctx->flush();

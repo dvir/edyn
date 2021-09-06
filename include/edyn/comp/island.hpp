@@ -4,6 +4,7 @@
 #include "edyn/util/entity_set.hpp"
 #include <entt/entity/fwd.hpp>
 #include <entt/entity/entity.hpp>
+#include <optional>
 
 namespace edyn {
 
@@ -14,13 +15,7 @@ namespace edyn {
 struct island {
     entity_set nodes;
     entity_set edges;
-};
-
-/**
- * @brief Timestamp of the current state of the simulation in an island.
- */
-struct island_timestamp {
-    double value;
+    std::optional<double> sleep_timestamp;
 };
 
 /**

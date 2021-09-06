@@ -33,7 +33,6 @@ namespace edyn {
  * island workers.
  */
 static const auto shared_components = std::tuple_cat(std::tuple<
-    island_timestamp,
     AABB,
     collision_filter,
     collision_exclusion,

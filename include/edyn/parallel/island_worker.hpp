@@ -4,7 +4,6 @@
 #include <mutex>
 #include <memory>
 #include <atomic>
-#include <optional>
 #include <entt/entity/fwd.hpp>
 #include <condition_variable>
 #include "edyn/parallel/job.hpp"
@@ -60,9 +59,9 @@ class island_worker final {
     void init_new_imported_contact_manifolds();
     void init_new_shapes();
     void insert_remote_node(entt::entity remote_entity);
-    void maybe_go_to_sleep();
-    bool could_go_to_sleep();
-    void go_to_sleep();
+    void maybe_go_to_sleep(entt::entity island_entity);
+    bool could_go_to_sleep(entt::entity island_entity) const;
+    void put_to_sleep(entt::entity island_entity);
     void sync();
     void sync_dirty();
     void update();
@@ -73,17 +72,15 @@ class island_worker final {
                        const std::vector<entt::entity> &new_nodes,
                        const std::vector<entt::entity> &new_edges);
     void split_islands();
+    void wake_up_island(entt::entity island_entity);
+    bool all_sleeping();
 
 public:
-    island_worker(entt::entity island_entity, const settings &settings,
+    island_worker(const settings &settings,
                   const material_mix_table &material_table,
                   message_queue_in_out message_queue);
 
     ~island_worker();
-
-    entt::entity island_entity() const {
-        return m_island_entity;
-    }
 
     void on_island_delta(const island_delta &delta);
 
@@ -104,7 +101,6 @@ public:
     void on_step_simulation(const msg::step_simulation &msg);
     void on_set_settings(const msg::set_settings &msg);
     void on_set_material_table(const msg::set_material_table &msg);
-    void on_wake_up_island(const msg::wake_up_island &);
     void on_set_com(const msg::set_com &);
 
     bool is_terminated() const;
@@ -116,15 +112,14 @@ public:
 
 private:
     entt::registry m_registry;
-    entt::entity m_island_entity;
     entity_map m_entity_map;
     broadphase_worker m_bphase;
     narrowphase m_nphase;
     solver m_solver;
     message_queue_in_out m_message_queue;
 
+    double m_last_time;
     double m_step_start_time;
-    std::optional<double> m_sleep_timestamp;
 
     state m_state;
 

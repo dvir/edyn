@@ -30,6 +30,7 @@
 #include "edyn/util/vector.hpp"
 #include "edyn/util/collision_util.hpp"
 #include "edyn/context/settings.hpp"
+#include <entt/entity/utility.hpp>
 #include <memory>
 #include <variant>
 #include <set>
@@ -53,7 +54,7 @@ void island_worker_func(job::data_type &data) {
     }
 }
 
-island_worker::island_worker(entt::entity island_entity, const settings &settings,
+island_worker::island_worker(const settings &settings,
                              const material_mix_table &material_table,
                              message_queue_in_out message_queue)
     : m_message_queue(message_queue)
@@ -74,13 +75,12 @@ island_worker::island_worker(entt::entity island_entity, const settings &setting
     m_registry.prepare<collision_filter>();
     m_registry.prepare<collision_exclusion>();
 
-    m_island_entity = m_registry.create();
-    m_entity_map.insert(island_entity, m_island_entity);
-
     m_this_job.func = &island_worker_func;
     auto archive = fixed_memory_output_archive(m_this_job.data.data(), m_this_job.data.size());
     auto ctx_intptr = reinterpret_cast<intptr_t>(this);
     archive(ctx_intptr);
+
+    m_last_time = performance_time();
 }
 
 island_worker::~island_worker() = default;
@@ -100,7 +100,6 @@ void island_worker::init() {
     m_message_queue.sink<island_delta>().connect<&island_worker::on_island_delta>(*this);
     m_message_queue.sink<msg::set_paused>().connect<&island_worker::on_set_paused>(*this);
     m_message_queue.sink<msg::step_simulation>().connect<&island_worker::on_step_simulation>(*this);
-    m_message_queue.sink<msg::wake_up_island>().connect<&island_worker::on_wake_up_island>(*this);
     m_message_queue.sink<msg::set_com>().connect<&island_worker::on_set_com>(*this);
     m_message_queue.sink<msg::set_settings>().connect<&island_worker::on_set_settings>(*this);
     m_message_queue.sink<msg::set_material_table>().connect<&island_worker::on_set_material_table>(*this);
@@ -118,10 +117,6 @@ void island_worker::init() {
     // Run broadphase to initialize the internal dynamic trees with the
     // imported AABBs.
     m_bphase.update();
-
-    // Assign tree view containing the updated broad-phase tree.
-    auto tview = m_bphase.view();
-    m_registry.emplace<tree_view>(m_island_entity, tview);
 
     m_state = state::step;
 }
@@ -384,22 +379,47 @@ void island_worker::on_island_delta(const island_delta &delta) {
     m_importing_delta = false;
 }
 
-void island_worker::on_wake_up_island(const msg::wake_up_island &) {
-    if (!m_registry.any_of<sleeping_tag>(m_island_entity)) return;
+void island_worker::wake_up_island(entt::entity island_entity) {
+    if (!m_registry.any_of<sleeping_tag>(island_entity)) return;
 
     auto builder = make_island_delta_builder(m_registry);
 
-    auto &isle_timestamp = m_registry.get<island_timestamp>(m_island_entity);
-    isle_timestamp.value = performance_time();
-    builder->updated(m_island_entity, isle_timestamp);
+    auto &island = m_registry.get<edyn::island>(island_entity);
 
-    m_registry.view<sleeping_tag>().each([&] (entt::entity entity) {
+    for (auto entity : island.nodes) {
+        m_registry.remove<sleeping_tag>(entity);
         builder->destroyed<sleeping_tag>(entity);
-    });
-    m_registry.clear<sleeping_tag>();
+    }
+
+    for (auto entity : island.edges) {
+        m_registry.remove<sleeping_tag>(entity);
+        builder->destroyed<sleeping_tag>(entity);
+
+        if (auto *manifold = m_registry.try_get<contact_manifold>(entity)) {
+            auto num_points = manifold->num_points();
+
+            for (size_t i = 0; i < num_points; ++i) {
+                auto contact_entity = manifold->point[i];
+                m_registry.remove<sleeping_tag>(contact_entity);
+            }
+        }
+    }
 
     auto delta = builder->finish();
     m_message_queue.send<island_delta>(std::move(delta));
+}
+
+bool island_worker::all_sleeping() {
+    auto sleeping_view = m_registry.view<sleeping_tag>();
+    auto island_view = m_registry.view<island>();
+
+    for (auto island_entity : island_view) {
+        if (!sleeping_view.contains(island_entity)) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 void island_worker::sync() {
@@ -531,12 +551,11 @@ bool island_worker::should_step() {
 
     auto &settings = m_registry.ctx<edyn::settings>();
 
-    if (settings.paused || m_registry.any_of<sleeping_tag>(m_island_entity)) {
+    if (settings.paused || all_sleeping()) {
         return false;
     }
 
-    auto &isle_time = m_registry.get<island_timestamp>(m_island_entity);
-    auto dt = time - isle_time.value;
+    auto dt = time - m_last_time;
 
     if (dt < settings.fixed_dt) {
         return false;
@@ -646,8 +665,7 @@ void island_worker::finish_narrowphase() {
 void island_worker::finish_step() {
     EDYN_ASSERT(m_state == state::finish_step);
 
-    auto &isle_time = m_registry.get<island_timestamp>(m_island_entity);
-    auto dt = m_step_start_time - isle_time.value;
+    auto dt = m_step_start_time - m_last_time;
 
     // Set a limit on the number of steps the worker can lag behind the current
     // time to prevent it from getting stuck in the past in case of a
@@ -660,19 +678,14 @@ void island_worker::finish_step() {
 
     if (num_steps > max_lagging_steps) {
         auto remainder = dt - num_steps * fixed_dt;
-        isle_time.value = m_step_start_time - (remainder + max_lagging_steps * fixed_dt);
+        m_last_time = m_step_start_time - (remainder + max_lagging_steps * fixed_dt);
     } else {
-        isle_time.value += fixed_dt;
+        m_last_time += fixed_dt;
     }
 
-    m_delta_builder->updated<island_timestamp>(m_island_entity, isle_time);
-
-    // Update tree view.
-    auto tview = m_bphase.view();
-    m_registry.replace<tree_view>(m_island_entity, tview);
-    m_delta_builder->updated(m_island_entity, tview);
-
-    maybe_go_to_sleep();
+    for (auto island_entity : m_registry.view<island>(entt::exclude_t<sleeping_tag>{})) {
+        maybe_go_to_sleep(island_entity);
+    }
 
     if (settings.external_system_post_step) {
         (*settings.external_system_post_step)(m_registry);
@@ -689,7 +702,6 @@ void island_worker::reschedule_now() {
 
 void island_worker::maybe_reschedule() {
     // Reschedule this job only if not paused nor sleeping.
-    auto sleeping = m_registry.any_of<sleeping_tag>(m_island_entity);
     auto paused = m_registry.ctx<edyn::settings>().paused;
 
     // The update is done and this job can be rescheduled after this point
@@ -700,7 +712,7 @@ void island_worker::maybe_reschedule() {
     // are external requests involved, not just the normal internal reschedule.
     // Always reschedule for immediate execution in that case.
     if (reschedule_count == 1) {
-        if (!paused && !sleeping) {
+        if (!paused && !all_sleeping()) {
             reschedule_later();
         }
     } else {
@@ -716,9 +728,8 @@ void island_worker::reschedule_later() {
     // If the timestamp of the current registry state is more that `m_fixed_dt`
     // before the current time, schedule it to run at a later time.
     auto time = performance_time();
-    auto &isle_time = m_registry.get<island_timestamp>(m_island_entity);
     auto fixed_dt = m_registry.ctx<edyn::settings>().fixed_dt;
-    auto delta_time = isle_time.value + fixed_dt - time;
+    auto delta_time = m_last_time + fixed_dt - time;
 
     if (delta_time > 0) {
         job_dispatcher::global().async_after(delta_time, m_this_job);
@@ -871,6 +882,8 @@ void island_worker::insert_to_island(entt::entity island_entity,
     auto &island = m_registry.get<edyn::island>(island_entity);
     island.nodes.insert(nodes.begin(), nodes.end());
     island.edges.insert(edges.begin(), edges.end());
+
+    wake_up_island(island_entity);
 }
 
 void island_worker::merge_islands(const std::vector<entt::entity> &island_entities,
@@ -879,7 +892,7 @@ void island_worker::merge_islands(const std::vector<entt::entity> &island_entiti
     EDYN_ASSERT(island_entities.size() > 1);
 
     // Pick biggest island and move the other entities into it.
-    entt::entity island_entity;
+    auto island_entity = entt::entity{entt::null};
     size_t biggest_size = 0;
     auto island_view = m_registry.view<island>();
 
@@ -893,7 +906,7 @@ void island_worker::merge_islands(const std::vector<entt::entity> &island_entiti
         }
     }
 
-    island_entity = island_entities.front();
+    EDYN_ASSERT(island_entity != entt::null);
 
     auto other_island_entities = island_entities;
     vector_erase(other_island_entities, island_entity);
@@ -907,26 +920,8 @@ void island_worker::merge_islands(const std::vector<entt::entity> &island_entiti
         all_edges.insert(all_edges.end(), island.edges.begin(), island.edges.end());
     }
 
-    // Entity might be coming from a sleeping island. Remove `sleeping_tag`s
-    // since the island is supposed to be awake after a merge.
-    for (auto entity : all_nodes) {
-        m_registry.remove<sleeping_tag>(entity);
-    }
-
-    for (auto entity : all_edges) {
-        m_registry.remove<sleeping_tag>(entity);
-
-        if (auto *manifold = m_registry.try_get<contact_manifold>(entity)) {
-            auto num_points = manifold->num_points();
-
-            for (size_t i = 0; i < num_points; ++i) {
-                auto contact_entity = manifold->point[i];
-                m_registry.remove<sleeping_tag>(contact_entity);
-            }
-        }
-    }
-
     insert_to_island(island_entity, all_nodes, all_edges);
+    wake_up_island(island_entity);
 
     // Destroy empty islands.
     m_registry.destroy(other_island_entities.begin(), other_island_entities.end());
@@ -1086,36 +1081,46 @@ void island_worker::insert_remote_node(entt::entity remote_entity) {
     m_registry.emplace<graph_node>(local_entity, node_index);
 }
 
-void island_worker::maybe_go_to_sleep() {
-    if (could_go_to_sleep()) {
-        const auto &isle_time = m_registry.get<island_timestamp>(m_island_entity);
+void island_worker::maybe_go_to_sleep(entt::entity island_entity) {
+    auto &island = m_registry.get<edyn::island>(island_entity);
 
-        if (!m_sleep_timestamp) {
-            m_sleep_timestamp = isle_time.value;
+    if (could_go_to_sleep(island_entity)) {
+        if (!island.sleep_timestamp) {
+            island.sleep_timestamp = m_last_time;
         } else {
-            auto sleep_dt = isle_time.value - *m_sleep_timestamp;
+            auto sleep_dt = m_last_time - *island.sleep_timestamp;
             if (sleep_dt > island_time_to_sleep) {
-                go_to_sleep();
-                m_sleep_timestamp.reset();
+                put_to_sleep(island_entity);
+                island.sleep_timestamp.reset();
             }
         }
     } else {
-        m_sleep_timestamp.reset();
+        island.sleep_timestamp.reset();
     }
 }
 
-bool island_worker::could_go_to_sleep() {
+bool island_worker::could_go_to_sleep(entt::entity island_entity) const {
+    if (m_registry.any_of<sleeping_tag>(island_entity)) {
+        return false;
+    }
+
+    auto &island = m_registry.get<edyn::island>(island_entity);
+    auto sleeping_disabled_view = m_registry.view<sleeping_disabled_tag>();
+
     // If any entity has a `sleeping_disabled_tag` then the island should
     // not go to sleep, since the movement of all entities depend on one
     // another in the same island.
-    if (!m_registry.view<sleeping_disabled_tag>().empty()) {
-        return false;
+    for (auto entity : island.nodes) {
+        if (sleeping_disabled_view.contains(entity)) {
+            return false;
+        }
     }
 
     // Check if there are any entities moving faster than the sleep threshold.
     auto vel_view = m_registry.view<linvel, angvel, procedural_tag>();
-    for (auto entity : vel_view) {
-        auto [v, w] = vel_view.get<linvel, angvel>(entity);
+
+    for (auto entity : island.nodes) {
+        auto [v, w] = vel_view.get<const linvel, const angvel>(entity);
 
         if ((length_sqr(v) > island_linear_sleep_threshold * island_linear_sleep_threshold) ||
             (length_sqr(w) > island_angular_sleep_threshold * island_angular_sleep_threshold)) {
@@ -1126,12 +1131,14 @@ bool island_worker::could_go_to_sleep() {
     return true;
 }
 
-void island_worker::go_to_sleep() {
-    m_registry.emplace<sleeping_tag>(m_island_entity);
-    m_delta_builder->created(m_island_entity, sleeping_tag{});
+void island_worker::put_to_sleep(entt::entity island_entity) {
+    m_registry.emplace<sleeping_tag>(island_entity);
+    m_delta_builder->created(island_entity, sleeping_tag{});
 
-    // Assign `sleeping_tag` to all procedural entities.
-    m_registry.view<procedural_tag>().each([&] (entt::entity entity) {
+    auto &island = m_registry.get<edyn::island>(island_entity);
+
+    // Assign `sleeping_tag` to all entities.
+    for (auto entity : island.nodes) {
         if (auto *v = m_registry.try_get<linvel>(entity); v) {
             *v = vector3_zero;
             m_delta_builder->updated(entity, *v);
@@ -1144,18 +1151,21 @@ void island_worker::go_to_sleep() {
 
         m_registry.emplace<sleeping_tag>(entity);
         m_delta_builder->created(entity, sleeping_tag{});
-    });
+    }
+
+    for (auto entity : island.edges) {
+        m_registry.emplace<sleeping_tag>(entity);
+        m_delta_builder->created(entity, sleeping_tag{});
+    }
 }
 
 void island_worker::on_set_paused(const msg::set_paused &msg) {
     m_registry.ctx<edyn::settings>().paused = msg.paused;
-    auto &isle_time = m_registry.get<island_timestamp>(m_island_entity);
-    auto timestamp = performance_time();
-    isle_time.value = timestamp;
+    m_last_time = performance_time();
 }
 
 void island_worker::on_step_simulation(const msg::step_simulation &) {
-    if (!m_registry.any_of<sleeping_tag>(m_island_entity)) {
+    if (!all_sleeping()) {
         m_state = state::begin_step;
     }
 }
