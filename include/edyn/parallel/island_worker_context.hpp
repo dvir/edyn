@@ -34,9 +34,6 @@ public:
     using island_delta_func_t = void(entt::entity, const island_delta &);
     entt::sigh<island_delta_func_t> m_island_delta_signal;
 
-    using split_island_func_t = void(entt::entity, const msg::split_island &);
-    entt::sigh<split_island_func_t> m_split_island_signal;
-
     island_worker_context(entt::entity island_entity,
                 island_worker *worker,
                 std::unique_ptr<island_delta_builder> delta_builder,
@@ -71,10 +68,6 @@ public:
      */
     void flush();
 
-    auto split() {
-        return m_worker->split();
-    }
-
     template<typename Message, typename... Args>
     void send(Args &&... args) {
         m_message_queue.send<Message>(std::forward<Args>(args)...);
@@ -85,12 +78,6 @@ public:
 
     auto island_delta_sink() {
         return entt::sink {m_island_delta_signal};
-    }
-
-    void on_split_island(const msg::split_island &);
-
-    auto split_island_sink() {
-        return entt::sink {m_split_island_signal};
     }
 
     auto island_entity() const {

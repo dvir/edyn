@@ -57,7 +57,6 @@ island_worker::island_worker(entt::entity island_entity, const settings &setting
                              const material_mix_table &material_table,
                              message_queue_in_out message_queue)
     : m_message_queue(message_queue)
-    , m_splitting(false)
     , m_state(state::init)
     , m_bphase(m_registry)
     , m_nphase(m_registry)
@@ -66,9 +65,6 @@ island_worker::island_worker(entt::entity island_entity, const settings &setting
     , m_importing_delta(false)
     , m_destroying_node(false)
     , m_topology_changed(false)
-    , m_pending_split_calculation(false)
-    , m_calculate_split_delay(0.6)
-    , m_calculate_split_timestamp(0)
 {
     m_registry.set<entity_graph>();
     m_registry.set<edyn::settings>(settings);
@@ -132,14 +128,10 @@ void island_worker::init() {
 
 void island_worker::on_destroy_contact_manifold(entt::registry &registry, entt::entity entity) {
     const auto importing = m_importing_delta;
-    const auto splitting = m_splitting.load(std::memory_order_relaxed);
 
     // If importing, do not insert this event into the delta because the entity
     // was already destroyed in the coordinator.
-    // If splitting, do not insert this destruction event into the delta because
-    // the entity is not actually being destroyed, it's just being moved into
-    // another island.
-    if (!importing && !splitting) {
+    if (!importing) {
         m_delta_builder->destroyed(entity);
     }
 
@@ -153,7 +145,7 @@ void island_worker::on_destroy_contact_manifold(entt::registry &registry, entt::
             registry.destroy(contact_entity);
         }
 
-        if (!importing && !splitting) {
+        if (!importing) {
             m_delta_builder->destroyed(contact_entity);
         }
 
@@ -171,9 +163,8 @@ void island_worker::on_destroy_contact_manifold(entt::registry &registry, entt::
 
 void island_worker::on_destroy_contact_point(entt::registry &registry, entt::entity entity) {
     const auto importing = m_importing_delta;
-    const auto splitting = m_splitting.load(std::memory_order_relaxed);
 
-    if (!importing && !splitting) {
+    if (!importing) {
         m_delta_builder->destroyed(entity);
     }
 
@@ -225,7 +216,7 @@ void island_worker::on_destroy_graph_node(entt::registry &registry, entt::entity
     graph.remove_all_edges(node.node_index);
     graph.remove_node(node.node_index);
 
-    if (!m_importing_delta && !m_splitting.load(std::memory_order_relaxed)) {
+    if (!m_importing_delta) {
         m_delta_builder->destroyed(entity);
     }
 
@@ -240,7 +231,7 @@ void island_worker::on_destroy_graph_edge(entt::registry &registry, entt::entity
         registry.ctx<entity_graph>().remove_edge(edge.edge_index);
     }
 
-    if (!m_importing_delta && !m_splitting.load(std::memory_order_relaxed)) {
+    if (!m_importing_delta) {
         m_delta_builder->destroyed(entity);
     }
 
@@ -679,42 +670,11 @@ void island_worker::finish_step() {
 
     m_state = state::step;
 
-    // Unfortunately, an island cannot be split immediately, because a merge could
-    // happen at the same time in the coordinator, which might reference entities
-    // that won't be present here anymore in the next update because they were moved
-    // into another island which the coordinator could not be aware of at the
-    // moment it was merging this island with another. Thus, this island sets its
-    // splitting flag to true and sends the split request to the coordinator and it
-    // is put to sleep until the coordinator calls `split()` which executes the
-    // split and puts it back to run.
-    if (should_split()) {
-        m_splitting.store(true, std::memory_order_release);
-        m_message_queue.send<msg::split_island>();
+    if (m_topology_changed) {
+        // TODO: Check if islands that changed have been split.
+
+        m_topology_changed = false;
     }
-}
-
-bool island_worker::should_split() {
-    if (!m_topology_changed) return false;
-
-    auto time = performance_time();
-
-    if (m_pending_split_calculation) {
-        if (time - m_calculate_split_timestamp > m_calculate_split_delay) {
-            m_pending_split_calculation = false;
-            m_topology_changed = false;
-
-            // If the graph has more than one connected component, it means
-            // this island could be split.
-            if (!m_registry.ctx<entity_graph>().is_single_connected_component()) {
-                return true;
-            }
-        }
-    } else {
-        m_pending_split_calculation = true;
-        m_calculate_split_timestamp = time;
-    }
-
-    return false;
 }
 
 void island_worker::reschedule_now() {
@@ -722,9 +682,7 @@ void island_worker::reschedule_now() {
 }
 
 void island_worker::maybe_reschedule() {
-    // Reschedule this job only if not paused nor sleeping nor splitting.
-    if (m_splitting.load(std::memory_order_relaxed)) return;
-
+    // Reschedule this job only if not paused nor sleeping.
     auto sleeping = m_registry.any_of<sleeping_tag>(m_island_entity);
     auto paused = m_registry.ctx<edyn::settings>().paused;
 
@@ -764,11 +722,6 @@ void island_worker::reschedule_later() {
 }
 
 void island_worker::reschedule() {
-    // Do not reschedule if it's awaiting a split to be completed. The main
-    // thread modifies the worker's registry during a split so this job must
-    // not be run in parallel with that task.
-    if (m_splitting.load(std::memory_order_relaxed)) return;
-
     // Only reschedule if it has not been scheduled and updated already.
     auto reschedule_count = m_reschedule_counter.fetch_add(1, std::memory_order_acq_rel);
     if (reschedule_count > 0) return;
@@ -1145,83 +1098,6 @@ void island_worker::on_set_com(const msg::set_com &msg) {
     apply_center_of_mass(m_registry, entity, msg.com);
 }
 
-entity_graph::connected_components_t island_worker::split() {
-    EDYN_ASSERT(m_splitting.load(std::memory_order_relaxed));
-
-    // Process any pending messages before splitting to ensure the registry
-    // is up to date. This message usually would be a merge with another
-    // island.
-    process_messages();
-
-    auto &graph = m_registry.ctx<entity_graph>();
-    auto connected_components = graph.connected_components();
-
-    if (connected_components.size() <= 1) {
-        m_splitting.store(false, std::memory_order_release);
-        reschedule_now();
-        return {};
-    }
-
-    // Sort connected components by size. The biggest component will stay
-    // in this island worker.
-    std::sort(connected_components.begin(), connected_components.end(),
-        [] (auto &lhs, auto &rhs) {
-            auto lsize = lhs.nodes.size() + lhs.edges.size();
-            auto rsize = rhs.nodes.size() + rhs.edges.size();
-            return lsize > rsize;
-        });
-
-    // Collect non-procedural entities that remain in this island. Since
-    // they can be present in multiple islands, it must not be removed
-    // from this island in the next step.
-    auto procedural_view = m_registry.view<procedural_tag>();
-    auto &resident_connected_component = connected_components.front();
-    std::vector<entt::entity> remaining_non_procedural_entities;
-
-    for (auto entity : resident_connected_component.nodes) {
-        if (!procedural_view.contains(entity)) {
-            remaining_non_procedural_entities.push_back(entity);
-        }
-    }
-
-    // Process connected components that are moving out of this island.
-    // Update all components of all entities that are moving out in the current
-    // island delta to ensure they're fully up to date in the coordinator and so
-    // no data will be lost when firing up new island workers which will operate
-    // on these entities.
-    // Remove entities in the smaller connected components from this worker.
-    // Non-procedural entities can be present in more than one connected component.
-    // Do not remove entities that are still present in the biggest connected
-    // component, thus skip the first.
-    for (size_t i = 1; i < connected_components.size(); ++i) {
-        auto &connected_component = connected_components[i];
-
-        for (auto entity : connected_component.nodes) {
-            if (!vector_contains(remaining_non_procedural_entities, entity) &&
-                m_registry.valid(entity)) {
-                m_delta_builder->updated_all(entity, m_registry);
-                m_registry.destroy(entity);
-            }
-        }
-
-        // All edges connecting to the destroyed nodes will be destroyed as well
-        // in `on_destroy_graph_node()`.
-    }
-
-    // Refresh island tree view after nodes are removed and send it back to
-    // the coordinator via the message queue.
-    auto tview = m_bphase.view();
-    m_registry.replace<tree_view>(m_island_entity, tview);
-    m_delta_builder->updated(m_island_entity, tview);
-    auto delta = m_delta_builder->finish();
-    m_message_queue.send<island_delta>(std::move(delta));
-
-    m_splitting.store(false, std::memory_order_release);
-    reschedule_now();
-
-    return connected_components;
-}
-
 bool island_worker::is_terminated() const {
     return m_terminated.load(std::memory_order_acquire);
 }
@@ -1231,7 +1107,6 @@ bool island_worker::is_terminating() const {
 }
 
 void island_worker::terminate() {
-    m_splitting.store(false, std::memory_order_release); // Cancel split.
     m_terminating.store(true, std::memory_order_release);
     reschedule();
 }

@@ -62,7 +62,6 @@ class island_worker final {
     void maybe_go_to_sleep();
     bool could_go_to_sleep();
     void go_to_sleep();
-    bool should_split();
     void sync();
     void sync_dirty();
     void update();
@@ -105,8 +104,6 @@ public:
     void on_wake_up_island(const msg::wake_up_island &);
     void on_set_com(const msg::set_com &);
 
-    entity_graph::connected_components_t split();
-
     bool is_terminated() const;
     bool is_terminating() const;
     void terminate();
@@ -127,15 +124,11 @@ private:
     std::optional<double> m_sleep_timestamp;
 
     state m_state;
-    std::atomic<bool> m_splitting;
 
     std::unique_ptr<island_delta_builder> m_delta_builder;
     bool m_importing_delta;
     bool m_destroying_node;
     bool m_topology_changed;
-    bool m_pending_split_calculation;
-    double m_calculate_split_delay;
-    double m_calculate_split_timestamp;
 
     std::vector<entt::entity> m_new_graph_nodes;
     std::vector<entt::entity> m_new_graph_edges;

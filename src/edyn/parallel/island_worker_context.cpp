@@ -16,7 +16,6 @@ island_worker_context::island_worker_context(entt::entity island_entity,
     , m_pending_flush(false)
 {
     m_message_queue.sink<island_delta>().connect<&island_worker_context::on_island_delta>(*this);
-    m_message_queue.sink<msg::split_island>().connect<&island_worker_context::on_split_island>(*this);
 }
 
 island_worker_context::~island_worker_context() {
@@ -25,10 +24,6 @@ island_worker_context::~island_worker_context() {
 
 void island_worker_context::on_island_delta(const island_delta &delta) {
     m_island_delta_signal.publish(m_island_entity, delta);
-}
-
-void island_worker_context::on_split_island(const msg::split_island &topo) {
-    m_split_island_signal.publish(m_island_entity, topo);
 }
 
 bool island_worker_context::delta_empty() const {

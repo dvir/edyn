@@ -328,7 +328,6 @@ entt::entity island_coordinator::create_island(double timestamp, bool sleeping,
 
     // Register to receive delta.
     ctx->island_delta_sink().connect<&island_coordinator::on_island_delta>(*this);
-    ctx->split_island_sink().connect<&island_coordinator::on_split_island>(*this);
 
     // Send over a delta containing this island entity to the island worker
     // before it even starts.
@@ -670,88 +669,6 @@ void island_coordinator::on_island_delta(entt::entity source_island_entity, cons
     m_importing_delta = false;
 }
 
-void island_coordinator::on_split_island(entt::entity source_island_entity, const msg::split_island &) {
-    m_islands_to_split.push_back(source_island_entity);
-}
-
-void island_coordinator::split_islands() {
-    for (auto island_entity : m_islands_to_split) {
-        split_island(island_entity);
-    }
-    m_islands_to_split.clear();
-}
-
-void island_coordinator::split_island(entt::entity split_island_entity) {
-    if (m_island_ctx_map.count(split_island_entity) == 0) return;
-
-    auto &ctx = m_island_ctx_map.at(split_island_entity);
-    auto connected_components = ctx->split();
-
-    if (connected_components.size() <= 1) return;
-
-    // Process any new messages enqueued during the split, such as created
-    // entities that need to have their entity mappings added and the
-    // update AABB `tree_view` of this island, which removes entities that
-    // have moved due to the split.
-    ctx->read_messages();
-
-    // Map entities to the coordinator space.
-    for (auto &connected_component : connected_components) {
-        for (auto &entity : connected_component.nodes) {
-            entity = ctx->m_entity_map.remloc(entity);
-        }
-
-        for (auto &entity : connected_component.edges) {
-            entity = ctx->m_entity_map.remloc(entity);
-        }
-    }
-
-    auto timestamp = m_registry->get<island_timestamp>(split_island_entity).value;
-    bool sleeping = m_registry->any_of<sleeping_tag>(split_island_entity);
-    auto multi_resident_view = m_registry->view<multi_island_resident>();
-    auto procedural_view = m_registry->view<procedural_tag>();
-
-    // Collect non-procedural entities that are still in the island that was split.
-    // The first connected component in the array is the one left in the island
-    // that was split.
-    auto &source_connected_component = connected_components.front();
-    std::vector<entt::entity> remaining_non_procedural_entities;
-
-    for (auto entity : source_connected_component.nodes) {
-        if (!procedural_view.contains(entity)) {
-            remaining_non_procedural_entities.push_back(entity);
-        }
-    }
-
-    for (size_t i = 1; i < connected_components.size(); ++i) {
-        auto &connected = connected_components[i];
-        bool contains_procedural = false;
-
-        for (auto entity : connected.nodes) {
-            if (procedural_view.contains(entity)) {
-                contains_procedural = true;
-                ctx->m_nodes.erase(entity);
-            } else if (!vector_contains(remaining_non_procedural_entities, entity)) {
-                // Remove island that was split from multi-residents if they're not
-                // present in the source island.
-                auto &resident = multi_resident_view.get<multi_island_resident>(entity);
-                resident.island_entities.erase(split_island_entity);
-                ctx->m_nodes.erase(entity);
-            }
-        }
-
-        for (auto entity : connected.edges) {
-            ctx->m_edges.erase(entity);
-        }
-
-        // Do not create a new island if this connected component does not
-        // contain any procedural node.
-        if (!contains_procedural) continue;
-
-        create_island(timestamp, sleeping, connected.nodes, connected.edges);
-    }
-}
-
 void island_coordinator::sync() {
     for (auto &pair : m_island_ctx_map) {
         auto island_entity = pair.first;
@@ -780,7 +697,6 @@ void island_coordinator::update() {
     init_new_nodes_and_edges();
     refresh_dirty_entities();
     sync();
-    split_islands();
 }
 
 void island_coordinator::set_paused(bool paused) {

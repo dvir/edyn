@@ -37,11 +37,8 @@ class island_coordinator final {
     entt::entity merge_islands(const std::vector<entt::entity> &island_entities,
                                const std::vector<entt::entity> &new_nodes,
                                const std::vector<entt::entity> &new_edges);
-    void split_islands();
-    void split_island(entt::entity);
     void wake_up_island(entt::entity);
     void refresh_dirty_entities();
-    bool should_split_island(entt::entity source_island_entity);
     void sync();
 
 public:
@@ -59,7 +56,6 @@ public:
     void on_destroy_island_resident(entt::registry &, entt::entity);
     void on_destroy_multi_island_resident(entt::registry &, entt::entity);
     void on_island_delta(entt::entity, const island_delta &);
-    void on_split_island(entt::entity, const msg::split_island &);
 
     void on_destroy_contact_manifold(entt::registry &, entt::entity);
 
@@ -87,7 +83,6 @@ private:
 
     std::vector<entt::entity> m_new_graph_nodes;
     std::vector<entt::entity> m_new_graph_edges;
-    std::vector<entt::entity> m_islands_to_split;
 
     bool m_importing_delta {false};
     double m_timestamp;
