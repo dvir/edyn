@@ -9,6 +9,7 @@
 #include "edyn/parallel/merge/merge_contact_point.hpp"
 #include "edyn/parallel/merge/merge_contact_manifold.hpp"
 #include "edyn/parallel/merge/merge_constraint.hpp"
+#include "edyn/parallel/merge/merge_island.hpp"
 #include "edyn/parallel/merge/merge_tree_view.hpp"
 #include "edyn/parallel/merge/merge_collision_exclusion.hpp"
 
@@ -41,8 +42,13 @@ struct updated_entity_component_container: public entity_component_container_bas
             if (!map.has_rem(remote_entity)) continue;
             auto local_entity = map.remloc(remote_entity);
 
-            auto& old_component = view.template get<Component>(local_entity);
-            merge(&old_component, pair.second, ctx);
+            Component *old_component = nullptr;
+
+            if (view.contains(local_entity)) {
+                old_component = &view.template get<Component>(local_entity);
+            }
+
+            merge(old_component, pair.second, ctx);
             registry.replace<Component>(local_entity, pair.second);
         }
     }

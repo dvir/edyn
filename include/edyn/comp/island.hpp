@@ -26,13 +26,21 @@ struct island_resident {
     entt::entity island_entity {entt::null};
 };
 
+struct island_worker_timestamp {
+    double value;
+};
+
+struct island_worker_resident {
+    entt::entity worker_entity {entt::null};
+};
+
 /**
  * @brief Component assigned to an entity that resides in multiple islands,
  * i.e. non-procedural entities which can be present in multiple islands
  * simultaneously.
  */
-struct multi_island_resident {
-    entity_set island_entities;
+struct multi_island_worker_resident {
+    entity_set worker_entities;
 };
 
 }

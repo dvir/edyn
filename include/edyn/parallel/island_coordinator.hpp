@@ -25,18 +25,13 @@ class island_coordinator final {
 
     void init_new_nodes_and_edges();
     void init_new_non_procedural_node(entt::entity);
-    entt::entity create_island(double timestamp, bool sleeping,
-                               const std::vector<entt::entity> &nodes,
-                               const std::vector<entt::entity> &edges);
-    void insert_to_island(island_worker_context &ctx,
+    entt::entity create_worker();
+    void insert_to_worker(island_worker_context &ctx,
                           const std::vector<entt::entity> &nodes,
                           const std::vector<entt::entity> &edges);
-    void insert_to_island(entt::entity island_entity,
+    void insert_to_worker(entt::entity worker_entity,
                           const std::vector<entt::entity> &nodes,
                           const std::vector<entt::entity> &edges);
-    entt::entity merge_islands(const std::vector<entt::entity> &island_entities,
-                               const std::vector<entt::entity> &new_nodes,
-                               const std::vector<entt::entity> &new_edges);
     void refresh_dirty_entities();
     void sync();
 
@@ -52,11 +47,9 @@ public:
     void on_destroy_graph_node(entt::registry &, entt::entity);
     void on_destroy_graph_edge(entt::registry &, entt::entity);
 
-    void on_destroy_island_resident(entt::registry &, entt::entity);
-    void on_destroy_multi_island_resident(entt::registry &, entt::entity);
+    void on_destroy_island_worker_resident(entt::registry &, entt::entity);
+    void on_destroy_multi_island_worker_resident(entt::registry &, entt::entity);
     void on_island_delta(entt::entity, const island_delta &);
-
-    void on_destroy_contact_manifold(entt::registry &, entt::entity);
 
     void update();
 
@@ -74,7 +67,8 @@ public:
 
     void material_table_changed();
 
-    void create_island(std::vector<entt::entity> nodes, bool sleeping = false);
+    void batch_nodes(const std::vector<entt::entity> &nodes,
+                     const std::vector<entt::entity> &edges);
 
 private:
     entt::registry *m_registry;
@@ -91,14 +85,14 @@ template<typename... Component>
 void island_coordinator::refresh(entt::entity entity) {
     static_assert(sizeof...(Component) > 0);
 
-    if (m_registry->any_of<island_resident>(entity)) {
-        auto &resident = m_registry->get<island_resident>(entity);
-        auto &ctx = m_island_ctx_map.at(resident.island_entity);
+    if (m_registry->any_of<island_worker_resident>(entity)) {
+        auto &resident = m_registry->get<island_worker_resident>(entity);
+        auto &ctx = m_island_ctx_map.at(resident.worker_entity);
         ctx->m_delta_builder->updated<Component...>(entity, *m_registry);
     } else {
-        auto &resident = m_registry->get<multi_island_resident>(entity);
-        for (auto island_entity : resident.island_entities) {
-            auto &ctx = m_island_ctx_map.at(island_entity);
+        auto &resident = m_registry->get<multi_island_worker_resident>(entity);
+        for (auto worker_entity : resident.worker_entities) {
+            auto &ctx = m_island_ctx_map.at(worker_entity);
             ctx->m_delta_builder->updated<Component...>(entity, *m_registry);
         }
     }

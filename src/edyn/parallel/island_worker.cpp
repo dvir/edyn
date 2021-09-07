@@ -109,6 +109,8 @@ void island_worker::init() {
     // this island.
     process_messages();
 
+    init_new_nodes_and_edges();
+
     auto &settings = m_registry.ctx<edyn::settings>();
     if (settings.external_system_init) {
         (*settings.external_system_init)(m_registry);
@@ -176,8 +178,7 @@ void island_worker::on_construct_graph_node(entt::registry &registry, entt::enti
     if (!m_importing_delta) {
         if (registry.any_of<procedural_tag>(entity)) {
             registry.emplace<island_resident>(entity);
-        } else {
-            registry.emplace<multi_island_resident>(entity);
+            m_delta_builder->created<island_resident>(entity, registry);
         }
     }
 }
@@ -189,6 +190,7 @@ void island_worker::on_construct_graph_edge(entt::registry &registry, entt::enti
         // Assuming this graph edge is a constraint or contact manifold, which
         // are always procedural, thus can only reside in one island.
         registry.emplace<island_resident>(entity);
+        m_delta_builder->created<island_resident>(entity, registry);
     }
 }
 
@@ -850,6 +852,8 @@ void island_worker::init_new_nodes_and_edges() {
                 if (island_entities.empty()) {
                     island_entity = m_registry.create();
                     m_registry.emplace<island>(island_entity);
+                    m_delta_builder->created(island_entity);
+                    m_delta_builder->created_all(island_entity, m_registry);
                 } else {
                     island_entity = island_entities.front();
                 }
@@ -872,16 +876,21 @@ void island_worker::insert_to_island(entt::entity island_entity,
     auto resident_view = m_registry.view<island_resident>();
 
     for (auto entity : nodes) {
-        resident_view.get<island_resident>(entity).island_entity = island_entity;
+        auto &resident = resident_view.get<island_resident>(entity);
+        resident.island_entity = island_entity;
+        m_delta_builder->updated(entity, resident);
     }
 
     for (auto entity : edges) {
-        resident_view.get<island_resident>(entity).island_entity = island_entity;
+        auto &resident = resident_view.get<island_resident>(entity);
+        resident.island_entity = island_entity;
+        m_delta_builder->updated(entity, resident);
     }
 
     auto &island = m_registry.get<edyn::island>(island_entity);
     island.nodes.insert(nodes.begin(), nodes.end());
     island.edges.insert(edges.begin(), edges.end());
+    m_delta_builder->updated(island_entity, island);
 
     wake_up_island(island_entity);
 }
@@ -925,6 +934,10 @@ void island_worker::merge_islands(const std::vector<entt::entity> &island_entiti
 
     // Destroy empty islands.
     m_registry.destroy(other_island_entities.begin(), other_island_entities.end());
+
+    for (auto entity : other_island_entities) {
+        m_delta_builder->destroyed(entity);
+    }
 }
 
 void island_worker::split_islands() {
@@ -942,6 +955,7 @@ void island_worker::split_islands() {
         if (island.nodes.empty()) {
             EDYN_ASSERT(island.edges.empty());
             m_registry.destroy(island_entity);
+            m_delta_builder->destroyed(island_entity);
             continue;
         }
 
@@ -978,18 +992,25 @@ void island_worker::split_islands() {
                 [&] (auto node_index) {
                     auto node_entity = graph.node_entity(node_index);
                     island.nodes.insert(node_entity);
-                    resident_view.get<edyn::island_resident>(node_entity).island_entity = island_entity;
+                    auto &resident = resident_view.get<edyn::island_resident>(node_entity);
+                    resident.island_entity = island_entity;
+                    m_delta_builder->updated(node_entity, resident);
 
                     connected_nodes.push_back(node_entity);
                 }, [&] (auto edge_index) {
                     auto edge_entity = graph.edge_entity(edge_index);
                     island.edges.insert(edge_entity);
-                    resident_view.get<edyn::island_resident>(edge_entity).island_entity = island_entity;
+                    auto &resident = resident_view.get<edyn::island_resident>(edge_entity);
+                    resident.island_entity = island_entity;
+                    m_delta_builder->updated(edge_entity, resident);
                 });
 
             for (auto entity : connected_nodes) {
                 all_nodes.erase(entity);
             }
+
+            m_delta_builder->created(island_entity);
+            m_delta_builder->created_all(island_entity, m_registry);
         }
     }
 

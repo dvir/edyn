@@ -20,7 +20,7 @@ find_package(EnTT REQUIRED)
 set(Edyn_SOURCES
     src/edyn/math/geom.cpp
     src/edyn/math/quaternion.cpp
-    src/edyn/collision/broadphase_main.cpp
+    #src/edyn/collision/broadphase_main.cpp
     src/edyn/collision/broadphase_worker.cpp
     src/edyn/collision/narrowphase.cpp
     src/edyn/collision/contact_manifold_map.cpp

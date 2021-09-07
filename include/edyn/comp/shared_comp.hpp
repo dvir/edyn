@@ -48,6 +48,8 @@ static const auto shared_components = std::tuple_cat(std::tuple<
     material,
     position,
     orientation,
+    island,
+    island_resident,
     contact_manifold,
     contact_manifold_with_restitution,
     contact_point,

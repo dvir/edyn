@@ -1,6 +1,6 @@
 #include "edyn/edyn.hpp"
 #include "edyn/context/settings.hpp"
-#include "edyn/collision/broadphase_main.hpp"
+//#include "edyn/collision/broadphase_main.hpp"
 #include "edyn/parallel/island_coordinator.hpp"
 #include "edyn/sys/update_presentation.hpp"
 #include "edyn/dynamics/material_mixing.hpp"
@@ -23,18 +23,18 @@ void attach(entt::registry &registry) {
     registry.set<settings>();
     registry.set<entity_graph>();
     registry.set<contact_manifold_map>(registry);
-    registry.set<island_coordinator>(registry);
-    registry.set<broadphase_main>(registry);
     registry.set<material_mix_table>();
+    registry.set<island_coordinator>(registry);
+    //registry.set<broadphase_main>(registry);
 }
 
 void detach(entt::registry &registry) {
     registry.unset<settings>();
     registry.unset<entity_graph>();
     registry.unset<contact_manifold_map>();
-    registry.unset<island_coordinator>();
-    registry.unset<broadphase_main>();
     registry.unset<material_mix_table>();
+    registry.unset<island_coordinator>();
+    //registry.unset<broadphase_main>();
 }
 
 scalar get_fixed_dt(const entt::registry &registry) {
@@ -64,7 +64,7 @@ void update(entt::registry &registry) {
 
     // Perform broad-phase between different islands and create contact manifolds
     // between them which will later cause islands to be merged into one.
-    registry.ctx<broadphase_main>().update();
+    //4registry.ctx<broadphase_main>().update();
 
     if (is_paused(registry)) {
         snap_presentation(registry);

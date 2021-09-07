@@ -178,7 +178,7 @@ std::vector<entt::entity> batch_rigidbodies(entt::registry &registry, const std:
     }
 
     auto &coordinator = registry.ctx<island_coordinator>();
-    coordinator.create_island(entities);
+    coordinator.batch_nodes(entities, {});
     return entities;
 }
 
