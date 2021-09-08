@@ -4,6 +4,7 @@
 #include "edyn/comp/position.hpp"
 #include "edyn/comp/aabb.hpp"
 #include "edyn/comp/tag.hpp"
+#include "edyn/comp/island.hpp"
 #include "edyn/util/aabb_util.hpp"
 #include <entt/entity/registry.hpp>
 
@@ -63,6 +64,18 @@ void update_aabbs(entt::registry &registry, std::tuple<Ts...>) {
 void update_aabbs(entt::registry &registry) {
     // Update AABBs for all shapes that can be transformed.
     update_aabbs(registry, dynamic_shapes_tuple);
+}
+
+void update_island_aabbs(entt::registry &registry) {
+    auto aabb_view = registry.view<AABB>();
+
+    registry.view<island, island_aabb>().each([&] (island &island, island_aabb &aabb) {
+        aabb = {aabb_view.get<AABB>(*island.nodes.begin())};
+
+        for (auto entity : island.nodes) {
+            aabb = {enclosing_aabb(aabb, aabb_view.get<AABB>(entity))};
+        }
+    });
 }
 
 }

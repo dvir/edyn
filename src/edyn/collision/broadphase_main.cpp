@@ -3,10 +3,6 @@
 #include "edyn/comp/aabb.hpp"
 #include "edyn/comp/island.hpp"
 #include "edyn/comp/tree_resident.hpp"
-#include "edyn/collision/contact_manifold.hpp"
-#include "edyn/collision/contact_manifold_map.hpp"
-#include "edyn/util/constraint_util.hpp"
-#include "edyn/collision/tree_view.hpp"
 #include "edyn/comp/tag.hpp"
 #include "edyn/parallel/parallel_for.hpp"
 #include "edyn/context/settings.hpp"
@@ -17,19 +13,17 @@ namespace edyn {
 broadphase_main::broadphase_main(entt::registry &registry)
     : m_registry(&registry)
 {
-    // Add tree nodes for islands (which have a `tree_view`) and for static and
-    // kinematic entities.
-    registry.on_construct<tree_view>().connect<&broadphase_main::on_construct_tree_view>(*this);
+    // Add tree nodes for islands and for static and kinematic entities when
+    // they're created.
+    registry.on_construct<island_aabb>().connect<&broadphase_main::on_construct_island_aabb>(*this);
     registry.on_construct<static_tag>().connect<&broadphase_main::on_construct_static_kinematic_tag>(*this);
     registry.on_construct<kinematic_tag>().connect<&broadphase_main::on_construct_static_kinematic_tag>(*this);
     registry.on_destroy<tree_resident>().connect<&broadphase_main::on_destroy_tree_resident>(*this);
 }
 
-void broadphase_main::on_construct_tree_view(entt::registry &registry, entt::entity entity) {
-    EDYN_ASSERT(registry.any_of<island>(entity));
-
-    auto &view = registry.get<tree_view>(entity);
-    auto id = m_island_tree.create(view.root_aabb(), entity);
+void broadphase_main::on_construct_island_aabb(entt::registry &registry, entt::entity entity) {
+    auto &aabb = registry.get<island_aabb>(entity);
+    auto id = m_island_tree.create(aabb, entity);
     registry.emplace<tree_resident>(entity, id, true);
 }
 
@@ -52,33 +46,30 @@ void broadphase_main::on_destroy_tree_resident(entt::registry &registry, entt::e
 }
 
 void broadphase_main::update() {
+    std::vector<entt::entity> awake_island_entities;
+
     // Update island AABBs in tree (ignore sleeping islands).
     auto exclude_sleeping = entt::exclude_t<sleeping_tag>{};
-    auto tree_view_resident_view = m_registry->view<tree_view, tree_resident>(exclude_sleeping);
-    tree_view_resident_view.each([&] (tree_view &tree_view, tree_resident &node) {
-        m_island_tree.move(node.id, tree_view.root_aabb());
+    m_registry->view<tree_resident, island_aabb>(exclude_sleeping)
+        .each([&] (auto island_entity, tree_resident &node, island_aabb &aabb)
+    {
+        m_island_tree.move(node.id, aabb);
+        awake_island_entities.push_back(island_entity);
     });
-
-    // Update kinematic AABBs in tree.
-    // TODO: only do this for kinematic entities that had their AABB updated.
-    auto kinematic_aabb_node_view = m_registry->view<tree_resident, AABB, kinematic_tag>();
-    kinematic_aabb_node_view.each([&] (tree_resident &node, AABB &aabb) {
-        m_np_tree.move(node.id, aabb);
-    });
-
-    // Search for island pairs with intersecting AABBs, i.e. the AABB of the root
-    // node of their trees intersect.
-    auto tree_view_not_sleeping_view = m_registry->view<tree_view>(exclude_sleeping);
-
-    std::vector<entt::entity> awake_island_entities;
-    for (auto entity : tree_view_not_sleeping_view) {
-        awake_island_entities.push_back(entity);
-    }
 
     if (awake_island_entities.empty()) {
         return;
     }
 
+    // Update kinematic AABBs in tree.
+    // TODO: only do this for kinematic entities that had their AABB updated.
+    m_registry->view<tree_resident, AABB, kinematic_tag>()
+        .each([&] (tree_resident &node, AABB &aabb)
+    {
+        m_np_tree.move(node.id, aabb);
+    });
+
+    // Search for island pairs with intersecting AABBs.
     const auto aabb_view = m_registry->view<AABB>();
     const auto tree_view_view = m_registry->view<tree_view>();
     const auto multi_resident_view = m_registry->view<multi_island_resident>();
@@ -216,14 +207,6 @@ entity_pair_vector broadphase_main::intersect_island_np(const tree_view &island_
     });
 
     return results;
-}
-
-bool broadphase_main::should_collide(entt::entity first, entt::entity second) const {
-    // Entities should never be equal because they should come from
-    // different islands at this point.
-    EDYN_ASSERT(first != second);
-    auto &settings = m_registry->ctx<edyn::settings>();
-    return (*settings.should_collide_func)(*m_registry, first, second);
 }
 
 }

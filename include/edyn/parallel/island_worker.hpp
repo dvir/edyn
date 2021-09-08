@@ -65,6 +65,7 @@ class island_worker final {
     void sync();
     void sync_dirty();
     void update();
+    entt::entity create_island();
     void insert_to_island(entt::entity island_entity,
                           const std::vector<entt::entity> &nodes,
                           const std::vector<entt::entity> &edges);

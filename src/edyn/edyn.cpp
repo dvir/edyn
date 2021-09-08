@@ -1,6 +1,6 @@
 #include "edyn/edyn.hpp"
 #include "edyn/context/settings.hpp"
-//#include "edyn/collision/broadphase_main.hpp"
+#include "edyn/collision/broadphase_main.hpp"
 #include "edyn/parallel/island_coordinator.hpp"
 #include "edyn/sys/update_presentation.hpp"
 #include "edyn/dynamics/material_mixing.hpp"
@@ -25,7 +25,7 @@ void attach(entt::registry &registry) {
     registry.set<contact_manifold_map>(registry);
     registry.set<material_mix_table>();
     registry.set<island_coordinator>(registry);
-    //registry.set<broadphase_main>(registry);
+    registry.set<broadphase_main>(registry);
 }
 
 void detach(entt::registry &registry) {
@@ -34,7 +34,7 @@ void detach(entt::registry &registry) {
     registry.unset<contact_manifold_map>();
     registry.unset<material_mix_table>();
     registry.unset<island_coordinator>();
-    //registry.unset<broadphase_main>();
+    registry.unset<broadphase_main>();
 }
 
 scalar get_fixed_dt(const entt::registry &registry) {
@@ -59,12 +59,12 @@ void update(entt::registry &registry) {
     // Run jobs scheduled in physics thread.
     job_dispatcher::global().once_current_queue();
 
-    // Do island management. Merge updated entity state into main registry.
+    // Do island management. Merge updated entity state from island workers
+    // into the main registry.
     registry.ctx<island_coordinator>().update();
 
-    // Perform broad-phase between different islands and create contact manifolds
-    // between them which will later cause islands to be merged into one.
-    //4registry.ctx<broadphase_main>().update();
+    // Look for islands in different workers whose AABB is intersecting.
+    registry.ctx<broadphase_main>().update();
 
     if (is_paused(registry)) {
         snap_presentation(registry);

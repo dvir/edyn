@@ -5,6 +5,7 @@
 #include "edyn/comp/tag.hpp"
 #include "edyn/config/config.h"
 #include "edyn/math/quaternion.hpp"
+#include "edyn/math/vector3.hpp"
 #include "edyn/parallel/job.hpp"
 #include "edyn/comp/island.hpp"
 #include "edyn/shapes/compound_shape.hpp"
@@ -850,10 +851,7 @@ void island_worker::init_new_nodes_and_edges() {
                 auto island_entity = entt::entity{};
 
                 if (island_entities.empty()) {
-                    island_entity = m_registry.create();
-                    m_registry.emplace<island>(island_entity);
-                    m_delta_builder->created(island_entity);
-                    m_delta_builder->created_all(island_entity, m_registry);
+                    island_entity = create_island();
                 } else {
                     island_entity = island_entities.front();
                 }
@@ -868,6 +866,15 @@ void island_worker::init_new_nodes_and_edges() {
             connected_edges.clear();
             island_entities.clear();
         });
+}
+
+entt::entity island_worker::create_island() {
+    auto island_entity = m_registry.create();
+    m_registry.emplace<island>(island_entity);
+    m_registry.emplace<island_aabb>(island_entity);
+    m_delta_builder->created(island_entity);
+    m_delta_builder->created_all(island_entity, m_registry);
+    return island_entity;
 }
 
 void island_worker::insert_to_island(entt::entity island_entity,
@@ -946,6 +953,7 @@ void island_worker::split_islands() {
     auto island_view = m_registry.view<island>();
     auto node_view = m_registry.view<graph_node>();
     auto resident_view = m_registry.view<island_resident>();
+    auto aabb_view = m_registry.view<AABB>();
     auto &graph = m_registry.ctx<entity_graph>();
     auto connected_nodes = std::vector<entt::entity>{};
 
@@ -986,20 +994,36 @@ void island_worker::split_islands() {
 
             auto island_entity = m_registry.create();
             auto &island = m_registry.emplace<edyn::island>(island_entity);
+            auto &aabb = m_registry.emplace<island_aabb>(island_entity);
+
             auto start_node = node_view.get<graph_node>(*all_nodes.begin());
+            auto is_first_node = true;
 
             graph.traverse_connecting_nodes(start_node.node_index,
                 [&] (auto node_index) {
                     auto node_entity = graph.node_entity(node_index);
                     island.nodes.insert(node_entity);
+
                     auto &resident = resident_view.get<edyn::island_resident>(node_entity);
                     resident.island_entity = island_entity;
                     m_delta_builder->updated(node_entity, resident);
+
+                    if (aabb_view.contains(node_entity)) {
+                        auto &node_aabb = aabb_view.get<AABB>(node_entity);
+
+                        if (is_first_node) {
+                            aabb = {node_aabb};
+                            is_first_node = false;
+                        } else {
+                            aabb = {enclosing_aabb(aabb, node_aabb)};
+                        }
+                    }
 
                     connected_nodes.push_back(node_entity);
                 }, [&] (auto edge_index) {
                     auto edge_entity = graph.edge_entity(edge_index);
                     island.edges.insert(edge_entity);
+
                     auto &resident = resident_view.get<edyn::island_resident>(edge_entity);
                     resident.island_entity = island_entity;
                     m_delta_builder->updated(edge_entity, resident);

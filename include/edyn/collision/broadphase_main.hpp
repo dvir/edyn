@@ -12,15 +12,9 @@
 
 namespace edyn {
 
-class tree_view;
-struct collision_filter;
-struct multi_island_resident;
-
 class broadphase_main {
 
     using aabb_view_t = entt::basic_view<entt::entity, entt::exclude_t<>, AABB>;
-    using multi_resident_view_t = entt::basic_view<entt::entity, entt::exclude_t<>, multi_island_resident>;
-    using tree_view_view_t = entt::basic_view<entt::entity, entt::exclude_t<>, tree_view>;
 
     // A higher threshold is used in the main broadphase to create contact
     // manifolds between different islands a little earlier and decrease the
@@ -51,8 +45,7 @@ public:
     template<typename Func>
     void raycast_non_procedural(vector3 p0, vector3 p1, Func func);
 
-    void on_construct_tree_view(entt::registry &, entt::entity);
-    void on_construct_static_tag(entt::registry &, entt::entity);
+    void on_construct_island_aabb(entt::registry &, entt::entity);
     void on_construct_static_kinematic_tag(entt::registry &, entt::entity);
     void on_destroy_tree_resident(entt::registry &, entt::entity);
 
@@ -61,8 +54,6 @@ private:
     dynamic_tree m_island_tree; // Tree for island AABBs.
     dynamic_tree m_np_tree; // Tree for non-procedural entities.
     std::vector<entity_pair_vector> m_pair_results;
-
-    bool should_collide(entt::entity, entt::entity) const;
 };
 
 template<typename Func>

@@ -1,6 +1,7 @@
 #ifndef EDYN_COMP_ISLAND_HPP
 #define EDYN_COMP_ISLAND_HPP
 
+#include "edyn/comp/aabb.hpp"
 #include "edyn/util/entity_set.hpp"
 #include <entt/entity/fwd.hpp>
 #include <entt/entity/entity.hpp>
@@ -17,6 +18,8 @@ struct island {
     entity_set edges;
     std::optional<double> sleep_timestamp;
 };
+
+struct island_aabb : public AABB {};
 
 /**
  * @brief Component assigned to an entity that resides in an island, i.e.
