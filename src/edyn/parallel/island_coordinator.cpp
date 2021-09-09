@@ -476,15 +476,13 @@ void island_coordinator::intersect_islands() {
                 island_worker_resident_view, multi_island_worker_resident_view);
         });
 
-        /* auto &manifold_map = m_registry->ctx<contact_manifold_map>();
-
         for (auto &results : m_pair_results) {
             for (auto &pair : results) {
-                if (!manifold_map.contains(pair)) {
-                    make_contact_manifold(*m_registry, pair.first, pair.second, m_separation_threshold);
-                }
+                process_intersecting_entities(pair, island_aabb_view,
+                                              island_worker_resident_view,
+                                              multi_island_worker_resident_view);
             }
-        } */
+        }
 
         m_pair_results.clear();
     } else {
@@ -494,33 +492,20 @@ void island_coordinator::intersect_islands() {
                 island_worker_resident_view, multi_island_worker_resident_view);
 
             for (auto &pair : pairs) {
-                if (island_aabb_view.contains(pair.second)) {
-
-                } else {
-                    // Insert non-procedural node into the worker where the island
-                    // is located.
-                    EDYN_ASSERT((m_registry->any_of<static_tag, kinematic_tag>(pair.second)));
-                    auto [worker_resident] = island_worker_resident_view.get(pair.first);
-                    auto [np_resident] = multi_island_worker_resident_view.get(pair.second);
-
-                    if (!np_resident.worker_entities.count(worker_resident.worker_entity)) {
-                        np_resident.worker_entities.insert(worker_resident.worker_entity);
-
-                        auto &ctx = m_island_ctx_map.at(worker_resident.worker_entity);
-                        ctx->m_delta_builder->created(pair.second);
-                        ctx->m_delta_builder->created_all(pair.second, *m_registry);
-                    }
-                }
+                process_intersecting_entities(pair, island_aabb_view,
+                                              island_worker_resident_view,
+                                              multi_island_worker_resident_view);
             }
         }
     }
 }
 
-entity_pair_vector island_coordinator::find_intersecting_islands(entt::entity island_entityA,
-                                                              const aabb_view_t &aabb_view,
-                                                              const island_aabb_view_t &island_aabb_view,
-                                                              const island_worker_resident_view_t &island_worker_resident_view,
-                                                              const multi_island_worker_resident_view_t &multi_island_worker_resident_view) const {
+entity_pair_vector island_coordinator::find_intersecting_islands(
+        entt::entity island_entityA, const aabb_view_t &aabb_view,
+        const island_aabb_view_t &island_aabb_view,
+        const island_worker_resident_view_t &island_worker_resident_view,
+        const multi_island_worker_resident_view_t &multi_island_worker_resident_view) const {
+
     auto island_aabbA = island_aabb_view.get<edyn::island_aabb>(island_entityA).inset(-m_island_aabb_offset);
     auto &residentA = island_worker_resident_view.get<island_worker_resident>(island_entityA);
     entity_pair_vector results;
@@ -557,6 +542,32 @@ entity_pair_vector island_coordinator::find_intersecting_islands(entt::entity is
     });
 
     return results;
+}
+
+void island_coordinator::process_intersecting_entities(
+        entity_pair pair, const island_aabb_view_t &island_aabb_view,
+        const island_worker_resident_view_t &island_worker_resident_view,
+        const multi_island_worker_resident_view_t &multi_island_worker_resident_view) {
+
+    if (island_aabb_view.contains(pair.second)) {
+
+    } else {
+        // Insert non-procedural node into the worker where the island
+        // is located.
+        auto island_entity = pair.first;
+        auto np_entity = pair.second;
+        EDYN_ASSERT((m_registry->any_of<static_tag, kinematic_tag>(np_entity)));
+        auto [worker_resident] = island_worker_resident_view.get(island_entity);
+        auto [np_resident] = multi_island_worker_resident_view.get(np_entity);
+
+        if (!np_resident.worker_entities.count(worker_resident.worker_entity)) {
+            np_resident.worker_entities.insert(worker_resident.worker_entity);
+
+            auto &ctx = m_island_ctx_map.at(worker_resident.worker_entity);
+            ctx->m_delta_builder->created(np_entity);
+            ctx->m_delta_builder->created_all(np_entity, *m_registry);
+        }
+    }
 }
 
 void island_coordinator::refresh_dirty_entities() {

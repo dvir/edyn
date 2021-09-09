@@ -42,11 +42,14 @@ class island_coordinator final {
     using island_worker_resident_view_t = entt::basic_view<entt::entity, entt::exclude_t<>, island_worker_resident>;
     using multi_island_worker_resident_view_t = entt::basic_view<entt::entity, entt::exclude_t<>, multi_island_worker_resident>;
 
-    entity_pair_vector find_intersecting_islands(entt::entity island_entityA,
-                                                 const aabb_view_t &,
-                                                 const island_aabb_view_t &,
-                                                 const island_worker_resident_view_t &,
-                                                 const multi_island_worker_resident_view_t &) const;
+    entity_pair_vector find_intersecting_islands(
+        entt::entity island_entityA, const aabb_view_t &,
+        const island_aabb_view_t &, const island_worker_resident_view_t &,
+        const multi_island_worker_resident_view_t &) const;
+
+    void process_intersecting_entities(
+        entity_pair, const island_aabb_view_t &, const island_worker_resident_view_t &,
+        const multi_island_worker_resident_view_t &);
 
     constexpr static auto m_island_aabb_offset = vector3_one * contact_breaking_threshold * scalar(4);
 

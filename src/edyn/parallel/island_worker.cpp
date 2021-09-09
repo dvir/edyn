@@ -426,6 +426,10 @@ void island_worker::sync() {
         m_delta_builder->updated(entity, aabb);
     });
 
+    m_registry.view<island_aabb>().each([&] (entt::entity entity, island_aabb &aabb) {
+        m_delta_builder->updated(entity, aabb);
+    });
+
     // Always update applied impulses since they're needed to maintain warm starting
     // functioning correctly when constraints are moved from one island to another.
     // TODO: synchronized merges would eliminate the need to share these
