@@ -25,6 +25,7 @@
 #include "edyn/util/vector.hpp"
 #include "edyn/context/settings.hpp"
 #include "edyn/dynamics/material_mixing.hpp"
+#include "edyn//config/config.h"
 #include <entt/entity/registry.hpp>
 #include <set>
 
@@ -493,7 +494,23 @@ void island_coordinator::intersect_islands() {
                 island_worker_resident_view, multi_island_worker_resident_view);
 
             for (auto &pair : pairs) {
-                make_contact_manifold(*m_registry, pair.first, pair.second, m_separation_threshold);
+                if (island_aabb_view.contains(pair.second)) {
+
+                } else {
+                    // Insert non-procedural node into the worker where the island
+                    // is located.
+                    EDYN_ASSERT((m_registry->any_of<static_tag, kinematic_tag>(pair.second)));
+                    auto [worker_resident] =  island_worker_resident_view.get(pair.first);
+                    auto [np_resident] = multi_island_worker_resident_view.get(pair.second);
+
+                    if (!np_resident.worker_entities.count(worker_resident.worker_entity)) {
+                        np_resident.worker_entities.insert(worker_resident.worker_entity);
+
+                        auto &ctx = m_island_ctx_map.at(worker_resident.worker_entity);
+                        ctx->m_delta_builder->created(pair.second);
+                        ctx->m_delta_builder->created_all(pair.second, *m_registry);
+                    }
+                }
             }
         }
     }
@@ -632,6 +649,13 @@ void island_coordinator::on_island_delta(entt::entity source_worker_entity, cons
         }
     };
 
+    delta.created_for_each<island>(index_source, [&] (entt::entity remote_entity, const island &) {
+        if (!source_ctx->m_entity_map.has_rem(remote_entity)) return;
+
+        auto local_entity = source_ctx->m_entity_map.remloc(remote_entity);
+        m_registry->emplace<island_worker_resident>(local_entity, source_worker_entity);
+    });
+
     // Insert edges in the graph for contact manifolds.
     delta.created_for_each<contact_manifold>(index_source, [&] (entt::entity remote_entity, const contact_manifold &manifold) {
         if (!source_ctx->m_entity_map.has_rem(remote_entity)) return;
@@ -644,6 +668,10 @@ void island_coordinator::on_island_delta(entt::entity source_worker_entity, cons
         m_registry->emplace<island_worker_resident>(local_entity, source_worker_entity);
         source_ctx->m_edges.insert(local_entity);
 
+        assign_island_to_contact_points(manifold);
+    });
+
+    delta.updated_for_each<contact_manifold>(index_source, [&] (entt::entity, const contact_manifold &manifold) {
         assign_island_to_contact_points(manifold);
     });
 
@@ -665,10 +693,6 @@ void island_coordinator::on_island_delta(entt::entity source_worker_entity, cons
         m_registry->emplace<graph_edge>(local_entity, edge_index);
         m_registry->emplace<island_worker_resident>(local_entity, source_worker_entity);
         source_ctx->m_edges.insert(local_entity);
-    });
-
-    delta.updated_for_each<contact_manifold>(index_source, [&] (entt::entity, const contact_manifold &manifold) {
-        assign_island_to_contact_points(manifold);
     });
 
     m_importing_delta = false;
