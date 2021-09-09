@@ -25,7 +25,6 @@
 #include "edyn/comp/graph_edge.hpp"
 #include "edyn/comp/rotated_mesh_list.hpp"
 #include "edyn/math/constants.hpp"
-#include "edyn/collision/tree_view.hpp"
 #include "edyn/util/aabb_util.hpp"
 #include "edyn/util/rigidbody.hpp"
 #include "edyn/util/vector.hpp"

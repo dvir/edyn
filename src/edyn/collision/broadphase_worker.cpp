@@ -3,7 +3,6 @@
 #include "edyn/comp/aabb.hpp"
 #include "edyn/comp/tree_resident.hpp"
 #include "edyn/collision/contact_manifold.hpp"
-#include "edyn/collision/tree_view.hpp"
 #include "edyn/comp/tag.hpp"
 #include "edyn/util/constraint_util.hpp"
 #include "edyn/parallel/parallel_for_async.hpp"
@@ -174,10 +173,6 @@ void broadphase_worker::finish_async_update() {
         }
         pairs.clear();
     }
-}
-
-tree_view broadphase_worker::view() const {
-    return m_tree.view();
 }
 
 }

@@ -10,7 +10,6 @@
 #include "edyn/parallel/merge/merge_contact_manifold.hpp"
 #include "edyn/parallel/merge/merge_constraint.hpp"
 #include "edyn/parallel/merge/merge_island.hpp"
-#include "edyn/parallel/merge/merge_tree_view.hpp"
 #include "edyn/parallel/merge/merge_collision_exclusion.hpp"
 
 namespace edyn {

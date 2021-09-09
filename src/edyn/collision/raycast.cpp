@@ -4,8 +4,7 @@
 #include "edyn/comp/orientation.hpp"
 #include "edyn/comp/origin.hpp"
 #include "edyn/comp/shape_index.hpp"
-#include "edyn/collision/tree_view.hpp"
-//#include "edyn/collision/broadphase_main.hpp"
+#include "edyn/collision/broadphase_main.hpp"
 #include "edyn/collision/broadphase_worker.hpp"
 #include "edyn/math/geom.hpp"
 #include "edyn/math/math.hpp"
@@ -20,7 +19,6 @@ raycast_result raycast(entt::registry &registry, vector3 p0, vector3 p1) {
     auto index_view = registry.view<shape_index>();
     auto tr_view = registry.view<position, orientation>();
     auto origin_view = registry.view<origin>();
-    auto tree_view_view = registry.view<tree_view>();
     auto shape_views_tuple = get_tuple_of_shape_views(registry);
 
     entt::entity hit_entity {entt::null};

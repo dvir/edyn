@@ -85,7 +85,7 @@ void broadphase_main::update() {
                 island_worker_resident_view, multi_island_worker_resident_view);
         });
 
-        auto &manifold_map = m_registry->ctx<contact_manifold_map>();
+        /* auto &manifold_map = m_registry->ctx<contact_manifold_map>();
 
         for (auto &results : m_pair_results) {
             for (auto &pair : results) {
@@ -93,7 +93,7 @@ void broadphase_main::update() {
                     make_contact_manifold(*m_registry, pair.first, pair.second, m_separation_threshold);
                 }
             }
-        }
+        } */
 
         m_pair_results.clear();
     } else {
@@ -102,9 +102,9 @@ void broadphase_main::update() {
                 island_entityA, aabb_view, island_aabb_view,
                 island_worker_resident_view, multi_island_worker_resident_view);
 
-            for (auto &pair : pairs) {
+            /* for (auto &pair : pairs) {
                 make_contact_manifold(*m_registry, pair.first, pair.second, m_separation_threshold);
-            }
+            } */
         }
     }
 }

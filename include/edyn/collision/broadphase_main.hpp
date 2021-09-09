@@ -27,12 +27,6 @@ class broadphase_main {
     constexpr static auto m_aabb_offset = vector3_one * -m_threshold;
     constexpr static auto m_separation_threshold = m_threshold * scalar(1.3);
 
-    entity_pair_vector intersect_islands(const tree_view &tree_viewA, const tree_view &tree_viewB,
-                                         const aabb_view_t &aabb_view) const;
-    entity_pair_vector intersect_islands_a(const tree_view &tree_viewA, const tree_view &tree_viewB,
-                                           const aabb_view_t &aabb_view) const;
-    entity_pair_vector intersect_island_np(const tree_view &island_tree, entt::entity np_entity,
-                                           const aabb_view_t &aabb_view) const;
     entity_pair_vector find_intersecting_islands(entt::entity island_entityA,
                                                  const aabb_view_t &,
                                                  const island_aabb_view_t &,
