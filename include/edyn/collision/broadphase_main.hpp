@@ -15,6 +15,9 @@ namespace edyn {
 class broadphase_main {
 
     using aabb_view_t = entt::basic_view<entt::entity, entt::exclude_t<>, AABB>;
+    using island_aabb_view_t = entt::basic_view<entt::entity, entt::exclude_t<>, island_aabb>;
+    using island_worker_resident_view_t = entt::basic_view<entt::entity, entt::exclude_t<>, island_worker_resident>;
+    using multi_island_worker_resident_view_t = entt::basic_view<entt::entity, entt::exclude_t<>, multi_island_worker_resident>;
 
     // A higher threshold is used in the main broadphase to create contact
     // manifolds between different islands a little earlier and decrease the
@@ -31,9 +34,10 @@ class broadphase_main {
     entity_pair_vector intersect_island_np(const tree_view &island_tree, entt::entity np_entity,
                                            const aabb_view_t &aabb_view) const;
     entity_pair_vector find_intersecting_islands(entt::entity island_entityA,
-                                                 const aabb_view_t &aabb_view,
-                                                 const multi_resident_view_t &resident_view,
-                                                 const tree_view_view_t &tree_view_view) const;
+                                                 const aabb_view_t &,
+                                                 const island_aabb_view_t &,
+                                                 const island_worker_resident_view_t &,
+                                                 const multi_island_worker_resident_view_t &) const;
 
 public:
     broadphase_main(entt::registry &);
