@@ -70,10 +70,19 @@ void update_island_aabbs(entt::registry &registry) {
     auto aabb_view = registry.view<AABB>();
 
     registry.view<island, island_aabb>().each([&] (island &island, island_aabb &aabb) {
-        aabb = {aabb_view.get<AABB>(*island.nodes.begin())};
+        auto is_first_node = true;
 
         for (auto entity : island.nodes) {
-            aabb = {enclosing_aabb(aabb, aabb_view.get<AABB>(entity))};
+            if (!aabb_view.contains(entity)) {
+                continue;
+            }
+
+            if (is_first_node) {
+                aabb = {aabb_view.get<AABB>(*island.nodes.begin())};
+                is_first_node = false;
+            } else {
+                aabb = {enclosing_aabb(aabb, aabb_view.get<AABB>(entity))};
+            }
         }
     });
 }
