@@ -5,12 +5,13 @@
 #include <memory>
 #include <unordered_map>
 #include <entt/entity/fwd.hpp>
-#include "edyn/math/scalar.hpp"
 #include "edyn/comp/island.hpp"
 #include "edyn/parallel/island_delta.hpp"
 #include "edyn/parallel/island_worker_context.hpp"
 #include "edyn/parallel/island_delta_builder.hpp"
 #include "edyn/parallel/message.hpp"
+#include "edyn/collision/dynamic_tree.hpp"
+#include "edyn/util/entity_pair.hpp"
 
 namespace edyn {
 
@@ -34,6 +35,20 @@ class island_coordinator final {
                           const std::vector<entt::entity> &edges);
     void refresh_dirty_entities();
     void sync();
+    void intersect_islands();
+
+    using aabb_view_t = entt::basic_view<entt::entity, entt::exclude_t<>, AABB>;
+    using island_aabb_view_t = entt::basic_view<entt::entity, entt::exclude_t<>, island_aabb>;
+    using island_worker_resident_view_t = entt::basic_view<entt::entity, entt::exclude_t<>, island_worker_resident>;
+    using multi_island_worker_resident_view_t = entt::basic_view<entt::entity, entt::exclude_t<>, multi_island_worker_resident>;
+
+    entity_pair_vector find_intersecting_islands(entt::entity island_entityA,
+                                                 const aabb_view_t &,
+                                                 const island_aabb_view_t &,
+                                                 const island_worker_resident_view_t &,
+                                                 const multi_island_worker_resident_view_t &) const;
+
+    constexpr static auto m_island_aabb_offset = vector3_one * contact_breaking_threshold * scalar(4);
 
 public:
     island_coordinator(island_coordinator const&) = delete;
@@ -46,6 +61,10 @@ public:
 
     void on_destroy_graph_node(entt::registry &, entt::entity);
     void on_destroy_graph_edge(entt::registry &, entt::entity);
+
+    void on_construct_island_aabb(entt::registry &, entt::entity);
+    void on_construct_static_kinematic_tag(entt::registry &, entt::entity);
+    void on_destroy_tree_resident(entt::registry &, entt::entity);
 
     void on_destroy_island_worker_resident(entt::registry &, entt::entity);
     void on_destroy_multi_island_worker_resident(entt::registry &, entt::entity);
@@ -70,6 +89,12 @@ public:
     void batch_nodes(const std::vector<entt::entity> &nodes,
                      const std::vector<entt::entity> &edges);
 
+    template<typename Func>
+    void raycast_islands(vector3 p0, vector3 p1, Func func);
+
+    template<typename Func>
+    void raycast_non_procedural(vector3 p0, vector3 p1, Func func);
+
 private:
     entt::registry *m_registry;
     std::unordered_map<entt::entity, std::unique_ptr<island_worker_context>> m_island_ctx_map;
@@ -79,6 +104,10 @@ private:
 
     bool m_importing_delta {false};
     double m_timestamp;
+
+    dynamic_tree m_island_tree; // Tree for island AABBs.
+    dynamic_tree m_np_tree; // Tree for non-procedural entities.
+    std::vector<entity_pair_vector> m_pair_results;
 };
 
 template<typename... Component>
@@ -96,6 +125,20 @@ void island_coordinator::refresh(entt::entity entity) {
             ctx->m_delta_builder->updated<Component...>(entity, *m_registry);
         }
     }
+}
+
+template<typename Func>
+void island_coordinator::raycast_islands(vector3 p0, vector3 p1, Func func) {
+    m_island_tree.raycast(p0, p1, [&] (tree_node_id_t id) {
+        func(m_island_tree.get_node(id).entity);
+    });
+}
+
+template<typename Func>
+void island_coordinator::raycast_non_procedural(vector3 p0, vector3 p1, Func func) {
+    m_np_tree.raycast(p0, p1, [&] (tree_node_id_t id) {
+        func(m_np_tree.get_node(id).entity);
+    });
 }
 
 }

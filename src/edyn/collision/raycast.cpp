@@ -4,7 +4,6 @@
 #include "edyn/comp/orientation.hpp"
 #include "edyn/comp/origin.hpp"
 #include "edyn/comp/shape_index.hpp"
-#include "edyn/collision/broadphase_main.hpp"
 #include "edyn/collision/broadphase_worker.hpp"
 #include "edyn/math/geom.hpp"
 #include "edyn/math/math.hpp"
