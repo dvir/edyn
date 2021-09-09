@@ -47,7 +47,6 @@ static const auto shared_components = std::tuple_cat(std::tuple<
     material,
     position,
     orientation,
-    island,
     island_resident,
     island_aabb,
     contact_manifold,
@@ -67,6 +66,7 @@ static const auto shared_components = std::tuple_cat(std::tuple<
     external_tag,
     shape_index,
     rigidbody_tag,
+    island_tag,
     rolling_tag,
     roll_direction
 >{}, constraints_tuple, shapes_tuple); // Concatenate with all shapes and constraints at the end.

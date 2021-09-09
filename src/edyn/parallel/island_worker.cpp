@@ -382,20 +382,19 @@ void island_worker::on_island_delta(const island_delta &delta) {
 }
 
 void island_worker::wake_up_island(entt::entity island_entity) {
-    if (!m_registry.any_of<sleeping_tag>(island_entity)) return;
-
-    auto builder = make_island_delta_builder(m_registry);
+    m_registry.remove<sleeping_tag>(island_entity);
+    m_delta_builder->destroyed<sleeping_tag>(island_entity);
 
     auto &island = m_registry.get<edyn::island>(island_entity);
 
     for (auto entity : island.nodes) {
         m_registry.remove<sleeping_tag>(entity);
-        builder->destroyed<sleeping_tag>(entity);
+        m_delta_builder->destroyed<sleeping_tag>(entity);
     }
 
     for (auto entity : island.edges) {
         m_registry.remove<sleeping_tag>(entity);
-        builder->destroyed<sleeping_tag>(entity);
+        m_delta_builder->destroyed<sleeping_tag>(entity);
 
         if (auto *manifold = m_registry.try_get<contact_manifold>(entity)) {
             auto num_points = manifold->num_points();
@@ -406,14 +405,11 @@ void island_worker::wake_up_island(entt::entity island_entity) {
             }
         }
     }
-
-    auto delta = builder->finish();
-    m_message_queue.send<island_delta>(std::move(delta));
 }
 
 bool island_worker::all_sleeping() {
     auto sleeping_view = m_registry.view<sleeping_tag>();
-    auto island_view = m_registry.view<island>();
+    auto island_view = m_registry.view<island_tag>();
 
     for (auto island_entity : island_view) {
         if (!sleeping_view.contains(island_entity)) {
@@ -685,7 +681,7 @@ void island_worker::finish_step() {
         m_last_time += fixed_dt;
     }
 
-    for (auto island_entity : m_registry.view<island>(entt::exclude_t<sleeping_tag>{})) {
+    for (auto island_entity : m_registry.view<island_tag>(entt::exclude_t<sleeping_tag>{})) {
         maybe_go_to_sleep(island_entity);
     }
 
@@ -871,6 +867,7 @@ entt::entity island_worker::create_island() {
     auto island_entity = m_registry.create();
     m_registry.emplace<island>(island_entity);
     m_registry.emplace<island_aabb>(island_entity);
+    m_registry.emplace<island_tag>(island_entity);
     m_delta_builder->created(island_entity);
     m_delta_builder->created_all(island_entity, m_registry);
     return island_entity;
@@ -896,7 +893,6 @@ void island_worker::insert_to_island(entt::entity island_entity,
     auto &island = m_registry.get<edyn::island>(island_entity);
     island.nodes.insert(nodes.begin(), nodes.end());
     island.edges.insert(edges.begin(), edges.end());
-    m_delta_builder->updated(island_entity, island);
 
     wake_up_island(island_entity);
 }
@@ -936,7 +932,6 @@ void island_worker::merge_islands(const std::vector<entt::entity> &island_entiti
     }
 
     insert_to_island(island_entity, all_nodes, all_edges);
-    wake_up_island(island_entity);
 
     // Destroy empty islands.
     m_registry.destroy(other_island_entities.begin(), other_island_entities.end());
@@ -955,6 +950,7 @@ void island_worker::split_islands() {
     auto aabb_view = m_registry.view<AABB>();
     auto &graph = m_registry.ctx<entity_graph>();
     auto connected_nodes = std::vector<entt::entity>{};
+    auto connected_edges = std::vector<entt::entity>{};
 
     for (auto island_entity : m_islands_to_split) {
         auto &island = island_view.get<edyn::island>(island_entity);
@@ -969,20 +965,28 @@ void island_worker::split_islands() {
         // Traverse graph starting at any of the island's nodes and check if the
         // collected nodes of the connected components match the island's nodes.
         connected_nodes.clear();
+        connected_edges.clear();
         auto start_node = node_view.get<graph_node>(*island.nodes.begin());
 
         graph.traverse_connecting_nodes(start_node.node_index, [&] (auto node_index) {
             auto node_entity = graph.node_entity(node_index);
             connected_nodes.push_back(node_entity);
+        }, [&] (auto edge_index) {
+            auto edge_entity = graph.edge_entity(edge_index);
+            connected_edges.push_back(edge_entity);
         });
 
         if (island.nodes.size() == connected_nodes.size()) {
             continue;
         }
 
+        wake_up_island(island_entity);
+
         // Traverse graph starting at the remaining nodes to find the other
         // connected components and create new islands for them.
         auto all_nodes = island.nodes;
+        island.nodes = {connected_nodes.begin(), connected_nodes.end()};
+        island.edges = {connected_edges.begin(), connected_edges.end()};
 
         for (auto entity : connected_nodes) {
             all_nodes.erase(entity);
@@ -994,6 +998,7 @@ void island_worker::split_islands() {
             auto island_entity = m_registry.create();
             auto &island = m_registry.emplace<edyn::island>(island_entity);
             auto &aabb = m_registry.emplace<island_aabb>(island_entity);
+            m_registry.emplace<island_tag>(island_entity);
 
             auto start_node = node_view.get<graph_node>(*all_nodes.begin());
             auto is_first_node = true;
@@ -1127,6 +1132,11 @@ void island_worker::insert_remote_node(entt::entity remote_entity) {
 
 void island_worker::maybe_go_to_sleep(entt::entity island_entity) {
     auto &island = m_registry.get<edyn::island>(island_entity);
+    auto is_sleeping = m_registry.any_of<sleeping_tag>(island_entity);
+
+    if (is_sleeping) {
+        return;
+    }
 
     if (could_go_to_sleep(island_entity)) {
         if (!island.sleep_timestamp) {
@@ -1144,10 +1154,6 @@ void island_worker::maybe_go_to_sleep(entt::entity island_entity) {
 }
 
 bool island_worker::could_go_to_sleep(entt::entity island_entity) const {
-    if (m_registry.any_of<sleeping_tag>(island_entity)) {
-        return false;
-    }
-
     auto &island = m_registry.get<edyn::island>(island_entity);
     auto sleeping_disabled_view = m_registry.view<sleeping_disabled_tag>();
 

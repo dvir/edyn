@@ -14,23 +14,6 @@ void merge(const island_resident *old_comp, island_resident &new_comp, merge_con
     }
 }
 
-template<> inline
-void merge(const island *old_comp, island &new_comp, merge_context &ctx) {
-    auto nodes = new_comp.nodes;
-    auto edges = new_comp.edges;
-
-    new_comp.nodes = {};
-    new_comp.edges = {};
-
-    for (auto entity : nodes) {
-        new_comp.nodes.insert(ctx.map->remloc(entity));
-    }
-
-    for (auto entity : edges) {
-        new_comp.edges.insert(ctx.map->remloc(entity));
-    }
-}
-
 }
 
 #endif // EDYN_PARALLEL_MERGE_MERGE_ISLAND_RESIDENT_HPP
