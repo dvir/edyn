@@ -243,7 +243,7 @@ void island_worker::on_destroy_island_resident(entt::registry &registry, entt::e
     auto &stats = registry.get<island_stats>(resident.island_entity);
     stats.num_nodes = island.nodes.size();
     stats.num_edges = island.edges.size();
-    m_delta_builder->updated(entity, stats);
+    m_delta_builder->updated(resident.island_entity, stats);
 
     m_islands_to_split.insert(resident.island_entity);
 }
