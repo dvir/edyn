@@ -298,7 +298,6 @@ void island_worker::on_island_delta(const island_delta &delta) {
         auto &node1 = node_view.get<graph_node>(manifold.body[1]);
         auto edge_index = graph.insert_edge(local_entity, node0.node_index, node1.node_index);
         m_registry.emplace<graph_edge>(local_entity, edge_index);
-        m_new_imported_contact_manifolds.push_back(local_entity);
     });
 
     // Insert edges in the graph for constraints (except contact constraints).
@@ -589,10 +588,7 @@ void island_worker::begin_step() {
 
     init_new_nodes_and_edges();
 
-    // Initialize new shapes before new manifolds because it'll perform
-    // collision detection for the new manifolds.
     init_new_shapes();
-    init_new_imported_contact_manifolds();
 
     // Create new contact constraints at the beginning of the step. Since
     // contact points are created at the end of a step, creating constraints
@@ -1068,26 +1064,6 @@ void island_worker::split_islands() {
     }
 
     m_islands_to_split.clear();
-}
-
-void island_worker::init_new_imported_contact_manifolds() {
-    // Entities in the new imported contact manifolds array might've been
-    // destroyed. Remove invalid entities before proceeding.
-    for (size_t i = 0; i < m_new_imported_contact_manifolds.size();) {
-        if (m_registry.valid(m_new_imported_contact_manifolds[i])) {
-            ++i;
-        } else {
-            m_new_imported_contact_manifolds[i] = m_new_imported_contact_manifolds.back();
-            m_new_imported_contact_manifolds.pop_back();
-        }
-    }
-
-    if (m_new_imported_contact_manifolds.empty()) return;
-
-    // Find contact points for new manifolds imported from the main registry.
-    m_nphase.update_contact_manifolds(m_new_imported_contact_manifolds.begin(),
-                                      m_new_imported_contact_manifolds.end());
-    m_new_imported_contact_manifolds.clear();
 }
 
 void island_worker::init_new_shapes() {
