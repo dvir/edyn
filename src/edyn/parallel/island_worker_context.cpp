@@ -5,11 +5,11 @@
 
 namespace edyn {
 
-island_worker_context::island_worker_context(entt::entity worker_entity,
+island_worker_context::island_worker_context(size_t index,
             island_worker *worker,
             std::unique_ptr<island_delta_builder> delta_builder,
             message_queue_in_out message_queue)
-    : m_worker_entity(worker_entity)
+    : m_index(index)
     , m_worker(worker)
     , m_message_queue(message_queue)
     , m_delta_builder(std::move(delta_builder))
@@ -23,7 +23,7 @@ island_worker_context::~island_worker_context() {
 }
 
 void island_worker_context::on_island_delta(const island_delta &delta) {
-    m_island_delta_signal.publish(m_worker_entity, delta);
+    m_island_delta_signal.publish(m_index, delta);
 }
 
 bool island_worker_context::delta_empty() const {

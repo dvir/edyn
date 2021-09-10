@@ -19,6 +19,15 @@ struct island {
     std::optional<double> sleep_timestamp;
 };
 
+struct island_stats {
+    unsigned num_nodes {0};
+    unsigned num_edges {0};
+
+    auto size() const {
+        return num_nodes + num_edges;
+    }
+};
+
 struct island_aabb : public AABB {};
 
 /**
@@ -29,12 +38,10 @@ struct island_resident {
     entt::entity island_entity {entt::null};
 };
 
-struct island_worker_timestamp {
-    double value;
-};
+static constexpr auto invalid_worker_index = SIZE_MAX;
 
 struct island_worker_resident {
-    entt::entity worker_entity {entt::null};
+    size_t worker_index {invalid_worker_index};
 };
 
 /**
@@ -43,7 +50,7 @@ struct island_worker_resident {
  * simultaneously.
  */
 struct multi_island_worker_resident {
-    entity_set worker_entities;
+    std::unordered_set<unsigned> worker_indices;
 };
 
 }

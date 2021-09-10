@@ -41,6 +41,8 @@ struct updated_entity_component_container: public entity_component_container_bas
             if (!map.has_rem(remote_entity)) continue;
             auto local_entity = map.remloc(remote_entity);
 
+            if (!registry.valid(local_entity)) continue;
+
             Component *old_component = nullptr;
 
             if (view.contains(local_entity)) {

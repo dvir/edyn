@@ -2,7 +2,6 @@
 #define EDYN_PARALLEL_ISLAND_WORKER_CONTEXT_HPP
 
 #include <memory>
-#include <entt/entity/fwd.hpp>
 #include <entt/signal/fwd.hpp>
 #include "edyn/parallel/island_delta.hpp"
 #include "edyn/util/entity_set.hpp"
@@ -20,7 +19,7 @@ class island_delta_builder;
  */
 class island_worker_context {
 
-    entt::entity m_worker_entity;
+    size_t m_index;
     island_worker *m_worker;
     message_queue_in_out m_message_queue;
     bool m_pending_flush;
@@ -30,11 +29,12 @@ public:
     entity_set m_edges;
     entity_map m_entity_map;
     std::unique_ptr<island_delta_builder> m_delta_builder;
+    double m_timestamp;
 
-    using island_delta_func_t = void(entt::entity, const island_delta &);
+    using island_delta_func_t = void(size_t, const island_delta &);
     entt::sigh<island_delta_func_t> m_island_delta_signal;
 
-    island_worker_context(entt::entity worker_entity,
+    island_worker_context(size_t m_index,
                 island_worker *worker,
                 std::unique_ptr<island_delta_builder> delta_builder,
                 message_queue_in_out message_queue);
@@ -80,8 +80,8 @@ public:
         return entt::sink {m_island_delta_signal};
     }
 
-    auto worker_entity() const {
-        return m_worker_entity;
+    auto index() const {
+        return m_index;
     }
 
     /**

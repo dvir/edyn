@@ -239,6 +239,12 @@ void island_worker::on_destroy_island_resident(entt::registry &registry, entt::e
     // Is this a node or an edge? Idk
     island.nodes.erase(entity);
     island.edges.erase(entity);
+
+    auto &stats = registry.get<island_stats>(resident.island_entity);
+    stats.num_nodes = island.nodes.size();
+    stats.num_edges = island.edges.size();
+    m_delta_builder->updated(entity, stats);
+
     m_islands_to_split.insert(resident.island_entity);
 }
 
@@ -872,6 +878,7 @@ entt::entity island_worker::create_island() {
     m_registry.emplace<island>(island_entity);
     m_registry.emplace<island_aabb>(island_entity);
     m_registry.emplace<island_tag>(island_entity);
+    m_registry.emplace<island_stats>(island_entity);
     m_delta_builder->created(island_entity);
     m_delta_builder->created_all(island_entity, m_registry);
     return island_entity;
@@ -897,6 +904,11 @@ void island_worker::insert_to_island(entt::entity island_entity,
     auto &island = m_registry.get<edyn::island>(island_entity);
     island.nodes.insert(nodes.begin(), nodes.end());
     island.edges.insert(edges.begin(), edges.end());
+
+    auto &stats = m_registry.get<island_stats>(island_entity);
+    stats.num_nodes = island.nodes.size();
+    stats.num_edges = island.edges.size();
+    m_delta_builder->updated(island_entity, stats);
 
     wake_up_island(island_entity);
 }
@@ -992,6 +1004,11 @@ void island_worker::split_islands() {
         island.nodes = {connected_nodes.begin(), connected_nodes.end()};
         island.edges = {connected_edges.begin(), connected_edges.end()};
 
+        auto &stats = m_registry.get<island_stats>(island_entity);
+        stats.num_nodes = island.nodes.size();
+        stats.num_edges = island.edges.size();
+        m_delta_builder->updated(island_entity, stats);
+
         for (auto entity : connected_nodes) {
             all_nodes.erase(entity);
         }
@@ -1002,6 +1019,7 @@ void island_worker::split_islands() {
             auto island_entity = m_registry.create();
             auto &island = m_registry.emplace<edyn::island>(island_entity);
             auto &aabb = m_registry.emplace<island_aabb>(island_entity);
+            auto &stats = m_registry.emplace<island_stats>(island_entity);
             m_registry.emplace<island_tag>(island_entity);
 
             auto start_node = node_view.get<graph_node>(*all_nodes.begin());
@@ -1012,7 +1030,7 @@ void island_worker::split_islands() {
                     auto node_entity = graph.node_entity(node_index);
                     island.nodes.insert(node_entity);
 
-                    auto &resident = resident_view.get<edyn::island_resident>(node_entity);
+                    auto &resident = resident_view.get<island_resident>(node_entity);
                     resident.island_entity = island_entity;
                     m_delta_builder->updated(node_entity, resident);
 
@@ -1032,7 +1050,7 @@ void island_worker::split_islands() {
                     auto edge_entity = graph.edge_entity(edge_index);
                     island.edges.insert(edge_entity);
 
-                    auto &resident = resident_view.get<edyn::island_resident>(edge_entity);
+                    auto &resident = resident_view.get<island_resident>(edge_entity);
                     resident.island_entity = island_entity;
                     m_delta_builder->updated(edge_entity, resident);
                 });
@@ -1040,6 +1058,9 @@ void island_worker::split_islands() {
             for (auto entity : connected_nodes) {
                 all_nodes.erase(entity);
             }
+
+            stats.num_nodes = island.nodes.size();
+            stats.num_edges = island.edges.size();
 
             m_delta_builder->created(island_entity);
             m_delta_builder->created_all(island_entity, m_registry);
