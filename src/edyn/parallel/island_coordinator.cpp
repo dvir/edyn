@@ -26,8 +26,10 @@
 #include "edyn/context/settings.hpp"
 #include "edyn/dynamics/material_mixing.hpp"
 #include "edyn//config/config.h"
-#include <cstdint>
 #include <entt/entity/registry.hpp>
+#include <cstdint>
+#include <limits>
+#include <numeric>
 #include <set>
 
 namespace edyn {
@@ -42,6 +44,7 @@ island_coordinator::island_coordinator(entt::registry &registry)
 
     registry.on_destroy<island_worker_resident>().connect<&island_coordinator::on_destroy_island_worker_resident>(*this);
     registry.on_destroy<multi_island_worker_resident>().connect<&island_coordinator::on_destroy_multi_island_worker_resident>(*this);
+    registry.on_destroy<island_tag>().connect<&island_coordinator::on_destroy_island>(*this);
 
     // Add tree nodes for islands and for static and kinematic entities when
     // they're created.
@@ -113,6 +116,10 @@ void island_coordinator::on_destroy_island_worker_resident(entt::registry &regis
     ctx->m_nodes.erase(entity);
     ctx->m_edges.erase(entity);
 
+    if (registry.any_of<island_tag>(entity)) {
+        ctx->m_islands.erase(entity);
+    }
+
     if (m_importing_delta) return;
 
     // When importing delta, the entity is removed from the entity map as part
@@ -124,6 +131,13 @@ void island_coordinator::on_destroy_island_worker_resident(entt::registry &regis
     // Notify the worker of the destruction which happened in the main registry
     // first.
     ctx->m_delta_builder->destroyed(entity);
+}
+
+void island_coordinator::on_destroy_island(entt::registry &registry, entt::entity entity) {
+    if (auto *resident = registry.try_get<island_worker_resident>(entity)) {
+        auto &ctx = m_worker_ctxes[resident->worker_index];
+        ctx->m_islands.erase(entity);
+    }
 }
 
 void island_coordinator::on_destroy_multi_island_worker_resident(entt::registry &registry, entt::entity entity) {
@@ -661,6 +675,7 @@ void island_coordinator::on_island_delta(size_t source_worker_index, const islan
 
         auto local_entity = source_ctx->m_entity_map.remloc(remote_entity);
         m_registry->emplace<island_worker_resident>(local_entity, source_worker_index);
+        source_ctx->m_islands.insert(local_entity);
     });
 
     // Insert edges in the graph for contact manifolds.
@@ -764,6 +779,57 @@ void island_coordinator::set_center_of_mass(entt::entity entity, const vector3 &
 
 double island_coordinator::get_worker_timestamp(size_t worker_index) const {
     return m_worker_ctxes[worker_index]->m_timestamp;
+}
+
+void island_coordinator::balance_workers() {
+    // Find the biggest and smallest workers. Move the smallest island in the
+    // big worker into the small worker if that doesn't make the small worker
+    // bigger than the big worker.
+    auto smallest_size = std::numeric_limits<size_t>::max();
+    auto biggest_size = size_t(0);
+    auto smallest_idx = SIZE_MAX;
+    auto biggest_idx = SIZE_MAX;
+    auto stats_view = m_registry->view<island_stats>();
+
+    for (size_t i = 0; i < m_worker_ctxes.size(); ++i) {
+        auto worker_size = size_t(0);
+
+        for (auto entity : m_worker_ctxes[i]->m_islands) {
+            auto [stats] = stats_view.get(entity);
+            worker_size += stats.size();
+        }
+
+        if (worker_size < smallest_size) {
+            smallest_size = worker_size;
+            smallest_idx = i;
+        }
+
+        if (worker_size > biggest_size) {
+            biggest_size = worker_size;
+            biggest_idx = i;
+        }
+    }
+
+    if (smallest_idx == biggest_idx) {
+        return;
+    }
+
+    auto smallest_island_size = std::numeric_limits<size_t>::max();
+    auto smallest_island_entity = entt::entity{entt::null};
+
+    for (auto entity : m_worker_ctxes[biggest_idx]->m_islands) {
+        auto [stats] = stats_view.get(entity);
+
+        if (stats.size() < smallest_island_size) {
+            smallest_island_size = stats.size();
+            smallest_island_entity = entity;
+        }
+    }
+
+    if (smallest_size + smallest_island_size < biggest_size) {
+        // Move smallest island into smallest worker.
+
+    }
 }
 
 }

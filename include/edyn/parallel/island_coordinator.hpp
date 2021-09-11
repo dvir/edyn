@@ -33,6 +33,7 @@ class island_coordinator final {
     void refresh_dirty_entities();
     void sync();
     void intersect_islands();
+    void balance_workers();
 
     using aabb_view_t = entt::basic_view<entt::entity, entt::exclude_t<>, AABB>;
     using island_aabb_view_t = entt::basic_view<entt::entity, entt::exclude_t<>, island_aabb>;
@@ -68,6 +69,7 @@ public:
 
     void on_destroy_island_worker_resident(entt::registry &, entt::entity);
     void on_destroy_multi_island_worker_resident(entt::registry &, entt::entity);
+    void on_destroy_island(entt::registry &, entt::entity);
     void on_island_delta(size_t, const island_delta &);
 
     void update();
