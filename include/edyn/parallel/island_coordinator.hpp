@@ -7,6 +7,7 @@
 #include "edyn/parallel/island_worker_context.hpp"
 #include "edyn/parallel/island_delta_builder.hpp"
 #include "edyn/parallel/message.hpp"
+#include "edyn/parallel/message_dispatcher.hpp"
 #include "edyn/collision/dynamic_tree.hpp"
 #include "edyn/util/entity_pair.hpp"
 
@@ -24,9 +25,6 @@ class island_coordinator final {
     void init_new_nodes_and_edges();
     void init_new_non_procedural_node(entt::entity);
     size_t create_worker();
-    void insert_to_worker(island_worker_context &ctx,
-                          const std::vector<entt::entity> &nodes,
-                          const std::vector<entt::entity> &edges);
     void insert_to_worker(size_t worker_index,
                           const std::vector<entt::entity> &nodes,
                           const std::vector<entt::entity> &edges);
@@ -70,7 +68,7 @@ public:
     void on_destroy_island_worker_resident(entt::registry &, entt::entity);
     void on_destroy_multi_island_worker_resident(entt::registry &, entt::entity);
     void on_destroy_island(entt::registry &, entt::entity);
-    void on_island_delta(size_t, const island_delta &);
+    void on_island_delta(const message<island_delta> &);
 
     void update();
 
@@ -102,6 +100,7 @@ public:
 private:
     entt::registry *m_registry;
     std::vector<std::unique_ptr<island_worker_context>> m_worker_ctxes;
+    message_queue_handle<island_delta> m_message_queue_handle;
 
     std::vector<entt::entity> m_new_graph_nodes;
     std::vector<entt::entity> m_new_graph_edges;

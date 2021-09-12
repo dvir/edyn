@@ -9,9 +9,9 @@
 #include "edyn/parallel/job.hpp"
 #include "edyn/dynamics/solver.hpp"
 #include "edyn/parallel/message.hpp"
+#include "edyn/parallel/message_dispatcher.hpp"
 #include "edyn/collision/narrowphase.hpp"
 #include "edyn/collision/broadphase_worker.hpp"
-#include "edyn/parallel/message_queue.hpp"
 #include "edyn/parallel/entity_graph.hpp"
 #include "edyn/util/entity_map.hpp"
 #include "edyn/util/entity_set.hpp"
@@ -76,13 +76,10 @@ class island_worker final {
     bool all_sleeping();
 
 public:
-    island_worker(const settings &settings,
-                  const material_mix_table &material_table,
-                  message_queue_in_out message_queue);
+    island_worker(const std::string &name, const settings &settings,
+                  const material_mix_table &material_table, message_queue_identifier coordinator_queue_id);
 
     ~island_worker();
-
-    void on_island_delta(const island_delta &delta);
 
     void reschedule();
 
@@ -97,11 +94,16 @@ public:
     void on_construct_compound_shape(entt::registry &, entt::entity);
     void on_destroy_rotated_mesh_list(entt::registry &, entt::entity);
 
-    void on_set_paused(const msg::set_paused &msg);
-    void on_step_simulation(const msg::step_simulation &msg);
-    void on_set_settings(const msg::set_settings &msg);
-    void on_set_material_table(const msg::set_material_table &msg);
-    void on_set_com(const msg::set_com &);
+    void on_island_delta(const message<island_delta> &msg);
+    void on_set_paused(const message<msg::set_paused> &msg);
+    void on_step_simulation(const message<msg::step_simulation> &msg);
+    void on_set_settings(const message<msg::set_settings> &msg);
+    void on_set_material_table(const message<msg::set_material_table> &msg);
+    void on_set_com(const message<msg::set_com> &);
+
+    auto message_queue_id() const {
+        return m_message_queue.identifier;
+    }
 
     bool is_terminated() const;
     bool is_terminating() const;
@@ -116,7 +118,14 @@ private:
     broadphase_worker m_bphase;
     narrowphase m_nphase;
     solver m_solver;
-    message_queue_in_out m_message_queue;
+    message_queue_handle<
+        msg::set_paused,
+        msg::set_settings,
+        msg::step_simulation,
+        msg::set_com,
+        msg::set_material_table,
+        island_delta> m_message_queue;
+    message_queue_identifier m_coordinator_queue_id;
 
     double m_last_time;
     double m_step_start_time;

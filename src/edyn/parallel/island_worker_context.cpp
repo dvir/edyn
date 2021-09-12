@@ -5,25 +5,12 @@
 
 namespace edyn {
 
-island_worker_context::island_worker_context(size_t index,
-            island_worker *worker,
-            std::unique_ptr<island_delta_builder> delta_builder,
-            message_queue_in_out message_queue)
-    : m_index(index)
-    , m_worker(worker)
-    , m_message_queue(message_queue)
+island_worker_context::island_worker_context(island_worker *worker,
+                                             std::unique_ptr<island_delta_builder> delta_builder)
+    : m_worker(worker)
     , m_delta_builder(std::move(delta_builder))
     , m_pending_flush(false)
 {
-    m_message_queue.sink<island_delta>().connect<&island_worker_context::on_island_delta>(*this);
-}
-
-island_worker_context::~island_worker_context() {
-    m_message_queue.sink<island_delta>().disconnect(*this);
-}
-
-void island_worker_context::on_island_delta(const island_delta &delta) {
-    m_island_delta_signal.publish(m_index, delta);
 }
 
 bool island_worker_context::delta_empty() const {
@@ -34,12 +21,8 @@ bool island_worker_context::delta_needs_wakeup() const {
     return m_delta_builder->needs_wakeup();
 }
 
-void island_worker_context::read_messages() {
-    m_message_queue.update();
-}
-
-void island_worker_context::send_delta() {
-    send<island_delta>(m_delta_builder->finish());
+void island_worker_context::send_delta(message_queue_identifier source) {
+    send<island_delta>(source, m_delta_builder->finish());
 }
 
 void island_worker_context::flush() {

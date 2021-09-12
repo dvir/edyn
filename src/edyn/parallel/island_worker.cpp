@@ -54,17 +54,23 @@ void island_worker_func(job::data_type &data) {
     }
 }
 
-island_worker::island_worker(const settings &settings,
-                             const material_mix_table &material_table,
-                             message_queue_in_out message_queue)
-    : m_message_queue(message_queue)
-    , m_state(state::init)
+island_worker::island_worker(const std::string &name, const settings &settings,
+                             const material_mix_table &material_table, message_queue_identifier coordinator_queue_id)
+    : m_state(state::init)
     , m_bphase(m_registry)
     , m_nphase(m_registry)
     , m_solver(m_registry)
     , m_delta_builder((*settings.make_island_delta_builder)())
     , m_importing_delta(false)
     , m_destroying_node(false)
+    , m_message_queue(message_dispatcher::global().make_queue<
+        msg::set_paused,
+        msg::set_settings,
+        msg::step_simulation,
+        msg::set_com,
+        msg::set_material_table,
+        island_delta>(name.c_str()))
+    , m_coordinator_queue_id(coordinator_queue_id)
 {
     m_registry.set<entity_graph>();
     m_registry.set<edyn::settings>(settings);
@@ -264,9 +270,10 @@ void island_worker::on_destroy_rotated_mesh_list(entt::registry &registry, entt:
     }
 }
 
-void island_worker::on_island_delta(const island_delta &delta) {
+void island_worker::on_island_delta(const message<island_delta> &msg) {
     // Import components from main registry.
     m_importing_delta = true;
+    auto &delta = msg.content;
     delta.import(m_registry, m_entity_map);
 
     for (auto remote_entity : delta.created_entities()) {
@@ -441,8 +448,7 @@ void island_worker::sync() {
 
     sync_dirty();
 
-    auto delta = m_delta_builder->finish();
-    m_message_queue.send<island_delta>(std::move(delta));
+    message_dispatcher::global().send<island_delta>(m_coordinator_queue_id, m_message_queue.identifier, m_delta_builder->finish());
 }
 
 void island_worker::sync_dirty() {
@@ -1191,28 +1197,28 @@ void island_worker::put_to_sleep(entt::entity island_entity) {
     }
 }
 
-void island_worker::on_set_paused(const msg::set_paused &msg) {
-    m_registry.ctx<edyn::settings>().paused = msg.paused;
+void island_worker::on_set_paused(const message<msg::set_paused> &msg) {
+    m_registry.ctx<edyn::settings>().paused = msg.content.paused;
     m_last_time = performance_time();
 }
 
-void island_worker::on_step_simulation(const msg::step_simulation &) {
+void island_worker::on_step_simulation(const message<msg::step_simulation> &) {
     if (!all_sleeping()) {
         m_state = state::begin_step;
     }
 }
 
-void island_worker::on_set_settings(const msg::set_settings &msg) {
-    m_registry.ctx<settings>() = msg.settings;
+void island_worker::on_set_settings(const message<msg::set_settings> &msg) {
+    m_registry.ctx<settings>() = msg.content.settings;
 }
 
-void island_worker::on_set_material_table(const msg::set_material_table &msg) {
-    m_registry.ctx<material_mix_table>() = msg.table;
+void island_worker::on_set_material_table(const message<msg::set_material_table> &msg) {
+    m_registry.ctx<material_mix_table>() = msg.content.table;
 }
 
-void island_worker::on_set_com(const msg::set_com &msg) {
-    auto entity = m_entity_map.remloc(msg.entity);
-    apply_center_of_mass(m_registry, entity, msg.com);
+void island_worker::on_set_com(const message<msg::set_com> &msg) {
+    auto entity = m_entity_map.remloc(msg.content.entity);
+    apply_center_of_mass(m_registry, entity, msg.content.com);
 }
 
 bool island_worker::is_terminated() const {

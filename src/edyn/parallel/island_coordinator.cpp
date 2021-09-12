@@ -26,6 +26,7 @@
 #include "edyn/context/settings.hpp"
 #include "edyn/dynamics/material_mixing.hpp"
 #include "edyn//config/config.h"
+#include <cstddef>
 #include <entt/entity/registry.hpp>
 #include <cstdint>
 #include <limits>
@@ -36,6 +37,7 @@ namespace edyn {
 
 island_coordinator::island_coordinator(entt::registry &registry)
     : m_registry(&registry)
+    , m_message_queue_handle(message_dispatcher::global().make_queue<island_delta>("coordinator"))
 {
     registry.on_construct<graph_node>().connect<&island_coordinator::on_construct_graph_node>(*this);
     registry.on_destroy<graph_node>().connect<&island_coordinator::on_destroy_graph_node>(*this);
@@ -52,6 +54,9 @@ island_coordinator::island_coordinator(entt::registry &registry)
     registry.on_construct<static_tag>().connect<&island_coordinator::on_construct_static_kinematic_tag>(*this);
     registry.on_construct<kinematic_tag>().connect<&island_coordinator::on_construct_static_kinematic_tag>(*this);
     registry.on_destroy<tree_resident>().connect<&island_coordinator::on_destroy_tree_resident>(*this);
+
+    // Register to receive delta.
+    m_message_queue_handle.sink<island_delta>().connect<&island_coordinator::on_island_delta>(*this);
 
     create_worker();
 }
@@ -282,9 +287,8 @@ void island_coordinator::init_new_nodes_and_edges() {
         },
         [&] () { // connectedComponentFunc
             if (worker_indices.empty()) {
-                // TODO: select least busy worker to insert new nodes in.
-                auto &worker = *m_worker_ctxes[0];
-                insert_to_worker(worker, connected_nodes, connected_edges);
+                // Insert into any worker.
+                batch_nodes(connected_nodes, connected_edges);
             } else if (worker_indices.size() == 1) {
                 auto worker_index = *worker_indices.begin();
                 insert_to_worker(worker_index, connected_nodes, connected_edges);
@@ -327,49 +331,54 @@ void island_coordinator::init_new_non_procedural_node(entt::entity node_entity) 
 }
 
 size_t island_coordinator::create_worker() {
-    auto [main_queue_input, main_queue_output] = make_message_queue_input_output();
-    auto [isle_queue_input, isle_queue_output] = make_message_queue_input_output();
-
     // The `island_worker` is dynamically allocated and kept alive while
     // the associated island lives. The job that's created for it calls its
     // `update` function which reschedules itself to be run over and over again.
     // After the `finish` function is called on it (when the island is destroyed),
     // it will be deallocated on the next run.
+    auto worker_index = m_worker_ctxes.size();
+    auto name = "worker-" + std::to_string(worker_index);
     auto &settings = m_registry->ctx<edyn::settings>();
     auto &material_table = m_registry->ctx<edyn::material_mix_table>();
-    auto *worker = new island_worker(settings, material_table,
-                                     message_queue_in_out(main_queue_input, isle_queue_output));
+    auto *worker = new island_worker(name, settings, material_table, m_message_queue_handle.identifier);
 
-    auto worker_index = m_worker_ctxes.size();
     auto &ctx = m_worker_ctxes.emplace_back(std::make_unique<island_worker_context>(
-        worker_index, worker, (*settings.make_island_delta_builder)(),
-        message_queue_in_out(isle_queue_input, main_queue_output)));
+        worker, (*settings.make_island_delta_builder)()));
     ctx->m_timestamp = performance_time();
-
-    // Register to receive delta.
-    ctx->island_delta_sink().connect<&island_coordinator::on_island_delta>(*this);
 
     return worker_index;
 }
 
 void island_coordinator::batch_nodes(const std::vector<entt::entity> &nodes,
                                      const std::vector<entt::entity> &edges) {
-    auto &ctx = *m_worker_ctxes[0];
-    insert_to_worker(ctx, nodes, edges);
-    ctx.send<island_delta>(ctx.m_delta_builder->finish());
+    EDYN_ASSERT(!m_worker_ctxes.empty());
+
+    // Find least busy worker.
+    auto worker_index = SIZE_MAX;
+    auto smallest_size = std::numeric_limits<size_t>::max();
+    auto stats_view = m_registry->view<island_stats>();
+
+    for (size_t i = 0; i < m_worker_ctxes.size(); ++i) {
+        auto worker_size = size_t(0);
+
+        for (auto entity : m_worker_ctxes[i]->m_islands) {
+            auto [stats] = stats_view.get(entity);
+            worker_size += stats.size();
+        }
+
+        if (worker_size < smallest_size) {
+            smallest_size = worker_size;
+            worker_index = i;
+        }
+    }
+
+    insert_to_worker(worker_index, nodes, edges);
 }
 
 void island_coordinator::insert_to_worker(size_t worker_index,
                                           const std::vector<entt::entity> &nodes,
                                           const std::vector<entt::entity> &edges) {
     auto &ctx = *m_worker_ctxes[worker_index];
-    insert_to_worker(ctx, nodes, edges);
-}
-
-void island_coordinator::insert_to_worker(island_worker_context &ctx,
-                                          const std::vector<entt::entity> &nodes,
-                                          const std::vector<entt::entity> &edges) {
-
     ctx.m_nodes.insert(nodes.begin(), nodes.end());
     ctx.m_edges.insert(edges.begin(), edges.end());
 
@@ -399,7 +408,6 @@ void island_coordinator::insert_to_worker(island_worker_context &ctx,
     ctx.m_delta_builder->reserve_created<constraint_impulse>(total_num_constraints);
     ctx.m_delta_builder->reserve_created<position, orientation, linvel, angvel, continuous>(nodes.size());
     ctx.m_delta_builder->reserve_created<mass, mass_inv, inertia, inertia_inv, inertia_world_inv>(nodes.size());
-    auto worker_index = ctx.index();
 
     for (auto entity : nodes) {
         if (procedural_view.contains(entity)) {
@@ -615,7 +623,13 @@ void island_coordinator::refresh_dirty_entities() {
     m_registry->clear<dirty>();
 }
 
-void island_coordinator::on_island_delta(size_t source_worker_index, const island_delta &delta) {
+void island_coordinator::on_island_delta(const message<island_delta> &msg) {
+    auto name = msg.sender.value;
+    auto prefix = std::string("worker-");
+    EDYN_ASSERT(name.compare(0, prefix.size(), prefix) == 0);
+    auto source_worker_index = std::stoi(name.substr(prefix.size(), name.size() - prefix.size()));
+
+    auto &delta = msg.content;
     m_importing_delta = true;
     auto &source_ctx = m_worker_ctxes[source_worker_index];
     delta.import(*m_registry, source_ctx->m_entity_map);
@@ -723,7 +737,7 @@ void island_coordinator::on_island_delta(size_t source_worker_index, const islan
 void island_coordinator::sync() {
     for (auto &ctx : m_worker_ctxes) {
         if (!ctx->delta_empty()) {
-            ctx->send_delta();
+            ctx->send_delta(m_message_queue_handle.identifier);
         }
 
         ctx->flush();
@@ -733,9 +747,7 @@ void island_coordinator::sync() {
 void island_coordinator::update() {
     m_timestamp = performance_time();
 
-    for (auto &ctx : m_worker_ctxes) {
-        ctx->read_messages();
-    }
+    m_message_queue_handle.update();
 
     init_new_nodes_and_edges();
     refresh_dirty_entities();
@@ -745,13 +757,13 @@ void island_coordinator::update() {
 
 void island_coordinator::set_paused(bool paused) {
     for (auto &ctx : m_worker_ctxes) {
-        ctx->send<msg::set_paused>(paused);
+        ctx->send<msg::set_paused>(m_message_queue_handle.identifier, paused);
     }
 }
 
 void island_coordinator::step_simulation() {
     for (auto &ctx : m_worker_ctxes) {
-        ctx->send<msg::step_simulation>();
+        ctx->send<msg::step_simulation>(m_message_queue_handle.identifier);
     }
 }
 
@@ -759,7 +771,7 @@ void island_coordinator::settings_changed() {
     auto &settings = m_registry->ctx<edyn::settings>();
 
     for (auto &ctx : m_worker_ctxes) {
-        ctx->send<msg::set_settings>(settings);
+        ctx->send<msg::set_settings>(m_message_queue_handle.identifier, settings);
     }
 }
 
@@ -767,14 +779,14 @@ void island_coordinator::material_table_changed() {
     auto &material_table = m_registry->ctx<material_mix_table>();
 
     for (auto &ctx : m_worker_ctxes) {
-        ctx->send<msg::set_material_table>(material_table);
+        ctx->send<msg::set_material_table>(m_message_queue_handle.identifier, material_table);
     }
 }
 
 void island_coordinator::set_center_of_mass(entt::entity entity, const vector3 &com) {
     auto &resident = m_registry->get<island_worker_resident>(entity);
     auto &ctx = m_worker_ctxes[resident.worker_index];
-    ctx->send<msg::set_com>(entity, com);
+    ctx->send<msg::set_com>(m_message_queue_handle.identifier, entity, com);
 }
 
 double island_coordinator::get_worker_timestamp(size_t worker_index) const {

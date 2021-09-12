@@ -29,7 +29,6 @@
 #include "parallel/job_dispatcher.hpp"
 #include "parallel/parallel_for.hpp"
 #include "parallel/parallel_for_async.hpp"
-#include "parallel/message_queue.hpp"
 #include "parallel/island_coordinator.hpp"
 #include "parallel/island_delta_builder.hpp"
 #include "util/moment_of_inertia.hpp"
