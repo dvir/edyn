@@ -37,7 +37,10 @@ namespace edyn {
 
 island_coordinator::island_coordinator(entt::registry &registry)
     : m_registry(&registry)
-    , m_message_queue_handle(message_dispatcher::global().make_queue<island_delta>("coordinator"))
+    , m_message_queue_handle(
+        message_dispatcher::global().make_queue<
+            msg::step_update,
+            msg::island_transfer_complete>("coordinator"))
 {
     registry.on_construct<graph_node>().connect<&island_coordinator::on_construct_graph_node>(*this);
     registry.on_destroy<graph_node>().connect<&island_coordinator::on_destroy_graph_node>(*this);
@@ -56,7 +59,7 @@ island_coordinator::island_coordinator(entt::registry &registry)
     registry.on_destroy<tree_resident>().connect<&island_coordinator::on_destroy_tree_resident>(*this);
 
     // Register to receive delta.
-    m_message_queue_handle.sink<island_delta>().connect<&island_coordinator::on_island_delta>(*this);
+    m_message_queue_handle.sink<msg::step_update>().connect<&island_coordinator::on_step_update>(*this);
 
     create_worker();
 }
@@ -623,13 +626,13 @@ void island_coordinator::refresh_dirty_entities() {
     m_registry->clear<dirty>();
 }
 
-void island_coordinator::on_island_delta(const message<island_delta> &msg) {
+void island_coordinator::on_step_update(const message<msg::step_update> &msg) {
     auto name = msg.sender.value;
     auto prefix = std::string("worker-");
     EDYN_ASSERT(name.compare(0, prefix.size(), prefix) == 0);
     auto source_worker_index = std::stoi(name.substr(prefix.size(), name.size() - prefix.size()));
 
-    auto &delta = msg.content;
+    auto &delta = msg.content.delta;
     m_importing_delta = true;
     auto &source_ctx = m_worker_ctxes[source_worker_index];
     delta.import(*m_registry, source_ctx->m_entity_map);

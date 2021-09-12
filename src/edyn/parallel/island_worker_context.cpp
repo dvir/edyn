@@ -22,7 +22,7 @@ bool island_worker_context::delta_needs_wakeup() const {
 }
 
 void island_worker_context::send_delta(message_queue_identifier source) {
-    send<island_delta>(source, m_delta_builder->finish());
+    send<msg::update_entities>(source, m_delta_builder->finish());
 }
 
 void island_worker_context::flush() {

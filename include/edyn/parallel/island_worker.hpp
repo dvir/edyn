@@ -94,7 +94,7 @@ public:
     void on_construct_compound_shape(entt::registry &, entt::entity);
     void on_destroy_rotated_mesh_list(entt::registry &, entt::entity);
 
-    void on_island_delta(const message<island_delta> &msg);
+    void on_update_entities(const message<msg::update_entities> &msg);
     void on_set_paused(const message<msg::set_paused> &msg);
     void on_step_simulation(const message<msg::step_simulation> &msg);
     void on_set_settings(const message<msg::set_settings> &msg);
@@ -124,7 +124,7 @@ private:
         msg::step_simulation,
         msg::set_com,
         msg::set_material_table,
-        island_delta> m_message_queue;
+        msg::update_entities> m_message_queue;
     message_queue_identifier m_coordinator_queue_id;
 
     double m_last_time;

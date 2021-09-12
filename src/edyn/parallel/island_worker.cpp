@@ -69,7 +69,7 @@ island_worker::island_worker(const std::string &name, const settings &settings,
         msg::step_simulation,
         msg::set_com,
         msg::set_material_table,
-        island_delta>(name.c_str()))
+        msg::update_entities>(name.c_str()))
     , m_coordinator_queue_id(coordinator_queue_id)
 {
     m_registry.set<entity_graph>();
@@ -103,7 +103,7 @@ void island_worker::init() {
     m_registry.on_construct<compound_shape>().connect<&island_worker::on_construct_compound_shape>(*this);
     m_registry.on_destroy<rotated_mesh_list>().connect<&island_worker::on_destroy_rotated_mesh_list>(*this);
 
-    m_message_queue.sink<island_delta>().connect<&island_worker::on_island_delta>(*this);
+    m_message_queue.sink<msg::update_entities>().connect<&island_worker::on_update_entities>(*this);
     m_message_queue.sink<msg::set_paused>().connect<&island_worker::on_set_paused>(*this);
     m_message_queue.sink<msg::step_simulation>().connect<&island_worker::on_step_simulation>(*this);
     m_message_queue.sink<msg::set_com>().connect<&island_worker::on_set_com>(*this);
@@ -270,10 +270,10 @@ void island_worker::on_destroy_rotated_mesh_list(entt::registry &registry, entt:
     }
 }
 
-void island_worker::on_island_delta(const message<island_delta> &msg) {
+void island_worker::on_update_entities(const message<msg::update_entities> &msg) {
     // Import components from main registry.
     m_importing_delta = true;
-    auto &delta = msg.content;
+    auto &delta = msg.content.delta;
     delta.import(m_registry, m_entity_map);
 
     for (auto remote_entity : delta.created_entities()) {
@@ -448,7 +448,7 @@ void island_worker::sync() {
 
     sync_dirty();
 
-    message_dispatcher::global().send<island_delta>(m_coordinator_queue_id, m_message_queue.identifier, m_delta_builder->finish());
+    message_dispatcher::global().send<msg::step_update>(m_coordinator_queue_id, m_message_queue.identifier, m_delta_builder->finish());
 }
 
 void island_worker::sync_dirty() {
