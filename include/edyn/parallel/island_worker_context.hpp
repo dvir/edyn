@@ -61,6 +61,10 @@ public:
         m_pending_flush = true;
     }
 
+    auto message_queue_id() const {
+        return m_worker->message_queue_id();
+    }
+
     /**
      * Schedules worker to be terminated.
      */

@@ -69,6 +69,7 @@ public:
     void on_destroy_multi_island_worker_resident(entt::registry &, entt::entity);
     void on_destroy_island(entt::registry &, entt::entity);
     void on_step_update(const message<msg::step_update> &);
+    void on_island_transfer_complete(const message<msg::island_transfer_complete> &);
 
     void update();
 
@@ -102,7 +103,8 @@ private:
     std::vector<std::unique_ptr<island_worker_context>> m_worker_ctxes;
     message_queue_handle<
         msg::step_update,
-        msg::island_transfer_complete> m_message_queue_handle;
+        msg::island_transfer_complete,
+        msg::island_transfer_failure> m_message_queue_handle;
 
     std::vector<entt::entity> m_new_graph_nodes;
     std::vector<entt::entity> m_new_graph_edges;

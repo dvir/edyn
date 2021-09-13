@@ -95,6 +95,8 @@ public:
     void on_destroy_rotated_mesh_list(entt::registry &, entt::entity);
 
     void on_update_entities(const message<msg::update_entities> &msg);
+    void on_transfer_island_request(const message<msg::transfer_island_request> &msg);
+    void on_transfer_island(const message<msg::transfer_island> &msg);
     void on_set_paused(const message<msg::set_paused> &msg);
     void on_step_simulation(const message<msg::step_simulation> &msg);
     void on_set_settings(const message<msg::set_settings> &msg);
@@ -124,7 +126,9 @@ private:
         msg::step_simulation,
         msg::set_com,
         msg::set_material_table,
-        msg::update_entities> m_message_queue;
+        msg::update_entities,
+        msg::transfer_island_request,
+        msg::transfer_island> m_message_queue;
     message_queue_identifier m_coordinator_queue_id;
 
     double m_last_time;

@@ -8,6 +8,7 @@
 #include "edyn/math/vector3.hpp"
 #include "edyn/parallel/job.hpp"
 #include "edyn/comp/island.hpp"
+#include "edyn/parallel/message_dispatcher.hpp"
 #include "edyn/shapes/compound_shape.hpp"
 #include "edyn/shapes/convex_mesh.hpp"
 #include "edyn/shapes/polyhedron_shape.hpp"
@@ -69,7 +70,9 @@ island_worker::island_worker(const std::string &name, const settings &settings,
         msg::step_simulation,
         msg::set_com,
         msg::set_material_table,
-        msg::update_entities>(name.c_str()))
+        msg::update_entities,
+        msg::transfer_island_request,
+        msg::transfer_island>(name.c_str()))
     , m_coordinator_queue_id(coordinator_queue_id)
 {
     m_registry.set<entity_graph>();
@@ -104,6 +107,8 @@ void island_worker::init() {
     m_registry.on_destroy<rotated_mesh_list>().connect<&island_worker::on_destroy_rotated_mesh_list>(*this);
 
     m_message_queue.sink<msg::update_entities>().connect<&island_worker::on_update_entities>(*this);
+    m_message_queue.sink<msg::transfer_island_request>().connect<&island_worker::on_transfer_island_request>(*this);
+    m_message_queue.sink<msg::transfer_island>().connect<&island_worker::on_transfer_island>(*this);
     m_message_queue.sink<msg::set_paused>().connect<&island_worker::on_set_paused>(*this);
     m_message_queue.sink<msg::step_simulation>().connect<&island_worker::on_step_simulation>(*this);
     m_message_queue.sink<msg::set_com>().connect<&island_worker::on_set_com>(*this);
@@ -391,6 +396,26 @@ void island_worker::on_update_entities(const message<msg::update_entities> &msg)
     });
 
     m_importing_delta = false;
+}
+
+void island_worker::on_transfer_island_request(const message<msg::transfer_island_request> &msg) {
+    auto remote_entity = msg.content.island_entity;
+
+    if (!m_entity_map.has_rem(remote_entity)) {
+        message_dispatcher::global().send<msg::island_transfer_failure>(msg.sender, message_queue_id(), remote_entity);
+        return;
+    }
+
+    auto island_entity = m_entity_map.remloc(remote_entity);
+    EDYN_ASSERT(m_registry.any_of<island_tag>(island_entity));
+
+    auto &settings = m_registry.ctx<edyn::settings>();
+    auto builder = (*settings.make_island_delta_builder)();
+
+    // Package entire island into one delta and remove entities from local registry.
+
+
+    message_dispatcher::global().send<msg::transfer_island>(msg.content.destination_id, message_queue_id(), builder->finish());
 }
 
 void island_worker::wake_up_island(entt::entity island_entity) {

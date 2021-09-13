@@ -47,9 +47,13 @@ struct update_entities {
 /**
  * A request to transfer an island from one worker to another.
  */
-struct transfer_island {
+struct transfer_island_request {
     entt::entity island_entity;
     message_queue_identifier destination_id;
+};
+
+struct transfer_island {
+    island_delta delta;
 };
 
 /**
@@ -57,6 +61,15 @@ struct transfer_island {
  * successfully.
  */
 struct island_transfer_complete {
+    // All entities transferred.
+    std::vector<entt::entity> entities;
+};
+
+/**
+ * Response sent back when an island transfer is not performed, perhaps because
+ * the island doesn't exist anymore or it's temporarily locked.
+ */
+struct island_transfer_failure {
     entt::entity island_entity;
 };
 
