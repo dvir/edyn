@@ -296,6 +296,8 @@ public:
         return *m_index_source.get();
     }
 
+    void map_entities_to_remote(const entity_map &);
+
 private:
     island_delta m_delta;
 

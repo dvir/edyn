@@ -64,6 +64,7 @@ island_worker::island_worker(const std::string &name, const settings &settings,
     , m_delta_builder((*settings.make_island_delta_builder)())
     , m_importing_delta(false)
     , m_destroying_node(false)
+    , m_transferring_island(false)
     , m_message_queue(message_dispatcher::global().make_queue<
         msg::set_paused,
         msg::set_settings,
@@ -90,6 +91,8 @@ island_worker::island_worker(const std::string &name, const settings &settings,
     archive(ctx_intptr);
 
     m_last_time = performance_time();
+
+    m_message_queue.push_sink().connect<&island_worker::reschedule>(*this);
 }
 
 island_worker::~island_worker() = default;
@@ -136,10 +139,13 @@ void island_worker::init() {
 
 void island_worker::on_destroy_contact_manifold(entt::registry &registry, entt::entity entity) {
     const auto importing = m_importing_delta;
+    const auto transferring = m_transferring_island;
 
-    // If importing, do not insert this event into the delta because the entity
-    // was already destroyed in the coordinator.
-    if (!importing) {
+    // If importing, do not insert this event into the delta because that means
+    // the entity was already destroyed in the coordinator.
+    // If transferring an island, do not add this change to the delta because
+    // the entity is not actually being destroyed, it's being moved.
+    if (!importing && !transferring) {
         m_delta_builder->destroyed(entity);
     }
 
@@ -153,7 +159,7 @@ void island_worker::on_destroy_contact_manifold(entt::registry &registry, entt::
             registry.destroy(contact_entity);
         }
 
-        if (!importing) {
+        if (!importing && !transferring) {
             m_delta_builder->destroyed(contact_entity);
         }
 
@@ -171,8 +177,9 @@ void island_worker::on_destroy_contact_manifold(entt::registry &registry, entt::
 
 void island_worker::on_destroy_contact_point(entt::registry &registry, entt::entity entity) {
     const auto importing = m_importing_delta;
+    const auto transferring = m_transferring_island;
 
-    if (!importing) {
+    if (!importing && !transferring) {
         m_delta_builder->destroyed(entity);
     }
 
@@ -206,21 +213,23 @@ void island_worker::on_construct_graph_edge(entt::registry &registry, entt::enti
 }
 
 void island_worker::on_destroy_graph_node(entt::registry &registry, entt::entity entity) {
-    auto &node = registry.get<graph_node>(entity);
-    auto &graph = registry.ctx<entity_graph>();
+    if (!m_transferring_island) {
+        auto &node = registry.get<graph_node>(entity);
+        auto &graph = registry.ctx<entity_graph>();
 
-    m_destroying_node = true;
+        m_destroying_node = true;
 
-    graph.visit_edges(node.node_index, [&] (entt::entity edge_entity) {
-        registry.destroy(edge_entity);
-    });
+        graph.visit_edges(node.node_index, [&] (entt::entity edge_entity) {
+            registry.destroy(edge_entity);
+        });
 
-    m_destroying_node = false;
+        m_destroying_node = false;
 
-    graph.remove_all_edges(node.node_index);
-    graph.remove_node(node.node_index);
+        graph.remove_all_edges(node.node_index);
+        graph.remove_node(node.node_index);
+    }
 
-    if (!m_importing_delta) {
+    if (!m_importing_delta && !m_transferring_island) {
         m_delta_builder->destroyed(entity);
     }
 
@@ -230,12 +239,12 @@ void island_worker::on_destroy_graph_node(entt::registry &registry, entt::entity
 }
 
 void island_worker::on_destroy_graph_edge(entt::registry &registry, entt::entity entity) {
-    if (!m_destroying_node) {
+    if (!m_destroying_node && !m_transferring_island) {
         auto &edge = registry.get<graph_edge>(entity);
         registry.ctx<entity_graph>().remove_edge(edge.edge_index);
     }
 
-    if (!m_importing_delta) {
+    if (!m_importing_delta && !m_transferring_island) {
         m_delta_builder->destroyed(entity);
     }
 
@@ -245,6 +254,13 @@ void island_worker::on_destroy_graph_edge(entt::registry &registry, entt::entity
 }
 
 void island_worker::on_destroy_island_resident(entt::registry &registry, entt::entity entity) {
+    // If this is happening while an island is being transferred, it means this
+    // entity is being moved out of this worker along with the island it resides
+    // in. Thus, it's unnecessary to update the island components.
+    if (m_transferring_island) {
+        return;
+    }
+
     auto &resident = registry.get<island_resident>(entity);
     auto &island = registry.get<edyn::island>(resident.island_entity);
     // Is this a node or an edge? Idk
@@ -276,9 +292,78 @@ void island_worker::on_destroy_rotated_mesh_list(entt::registry &registry, entt:
 }
 
 void island_worker::on_update_entities(const message<msg::update_entities> &msg) {
-    // Import components from main registry.
+    import_delta(msg.content.delta);
+}
+
+void island_worker::on_transfer_island_request(const message<msg::transfer_island_request> &msg) {
+    auto remote_entity = msg.content.island_entity;
+
+    if (!m_entity_map.has_rem(remote_entity)) {
+        message_dispatcher::global().send<msg::island_transfer_failure>(msg.sender, message_queue_id(), remote_entity);
+        return;
+    }
+
+    auto island_entity = m_entity_map.remloc(remote_entity);
+    EDYN_ASSERT(m_registry.any_of<island_tag>(island_entity));
+
+    auto &settings = m_registry.ctx<edyn::settings>();
+    auto builder = (*settings.make_island_delta_builder)();
+    m_transferring_island = true;
+
+    // Package entire island into one delta and remove entities from local registry.
+    auto &island = m_registry.get<edyn::island>(island_entity);
+    auto &graph = m_registry.ctx<entity_graph>();
+    auto node_view = m_registry.view<graph_node>();
+    auto edge_view = m_registry.view<graph_edge>();
+
+    builder->created(island_entity);
+    builder->created_all(island_entity, m_registry);
+
+    for (auto entity : island.edges) {
+        builder->created(entity);
+        builder->created_all(entity, m_registry);
+
+        auto [edge] = edge_view.get(entity);
+        graph.remove_edge(edge.edge_index);
+    }
+
+    for (auto entity : island.nodes) {
+        builder->created(entity);
+        builder->created_all(entity, m_registry);
+
+        auto [node] = node_view.get(entity);
+        graph.remove_node(node.node_index);
+    }
+
+    for (auto entity : island.edges) {
+        m_registry.destroy(entity);
+    }
+
+    for (auto entity : island.nodes) {
+        m_registry.destroy(entity);
+    }
+
+    m_registry.destroy(island_entity);
+
+    m_transferring_island = false;
+
+    message_dispatcher::global().send<msg::transfer_island>(msg.content.destination_id, message_queue_id(), builder->finish());
+}
+
+void island_worker::on_transfer_island(const message<msg::transfer_island> &msg) {
+    import_delta(msg.content.delta);
+
+    // Entity mappings have been added to the current delta as part of the
+    // import process. Send these to the coordinator before the transfer
+    // completion message.
+    //message_dispatcher::global().send<msg::step_update>(m_coordinator_queue_id, m_message_queue.identifier, m_delta_builder->finish());
+
+    message_dispatcher::global().send<msg::island_transfer_complete>(m_coordinator_queue_id, m_message_queue.identifier, msg.content.delta.created_entities());
+}
+
+void island_worker::import_delta(const island_delta &delta) {
     m_importing_delta = true;
-    auto &delta = msg.content.delta;
+
     delta.import(m_registry, m_entity_map);
 
     for (auto remote_entity : delta.created_entities()) {
@@ -396,26 +481,6 @@ void island_worker::on_update_entities(const message<msg::update_entities> &msg)
     });
 
     m_importing_delta = false;
-}
-
-void island_worker::on_transfer_island_request(const message<msg::transfer_island_request> &msg) {
-    auto remote_entity = msg.content.island_entity;
-
-    if (!m_entity_map.has_rem(remote_entity)) {
-        message_dispatcher::global().send<msg::island_transfer_failure>(msg.sender, message_queue_id(), remote_entity);
-        return;
-    }
-
-    auto island_entity = m_entity_map.remloc(remote_entity);
-    EDYN_ASSERT(m_registry.any_of<island_tag>(island_entity));
-
-    auto &settings = m_registry.ctx<edyn::settings>();
-    auto builder = (*settings.make_island_delta_builder)();
-
-    // Package entire island into one delta and remove entities from local registry.
-
-
-    message_dispatcher::global().send<msg::transfer_island>(msg.content.destination_id, message_queue_id(), builder->finish());
 }
 
 void island_worker::wake_up_island(entt::entity island_entity) {

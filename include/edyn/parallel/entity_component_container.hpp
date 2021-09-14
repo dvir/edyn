@@ -20,6 +20,7 @@ struct entity_component_container_base {
     virtual void reserve(size_t size) = 0;
     virtual bool empty() const = 0;
     virtual void clear() = 0;
+    virtual void map_entities_to_remote(const entity_map &) = 0;
 };
 
 // Only enable the updated component container for non-empty components since
@@ -62,6 +63,12 @@ struct updated_entity_component_container: public entity_component_container_bas
 
     void clear() override {
         pairs.clear();
+    }
+
+    void map_entities_to_remote(const entity_map &map) override {
+        for (auto &pair : pairs) {
+            pair.first = map.locrem(pair.first);
+        }
     }
 };
 
@@ -119,6 +126,12 @@ struct created_entity_component_container: public entity_component_container_bas
     void clear() override {
         pairs.clear();
     }
+
+    void map_entities_to_remote(const entity_map &map) override {
+        for (auto &pair : pairs) {
+            pair.first = map.locrem(pair.first);
+        }
+    }
 };
 
 template<typename Component>
@@ -143,6 +156,12 @@ struct destroyed_entity_component_container: public entity_component_container_b
 
     void clear() override {
         entities.clear();
+    }
+
+    void map_entities_to_remote(const entity_map &map) override {
+        for (auto &entity : entities) {
+            entity = map.locrem(entity);
+        }
     }
 };
 

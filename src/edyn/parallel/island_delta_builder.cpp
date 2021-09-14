@@ -45,4 +45,32 @@ bool island_delta_builder::needs_wakeup() const {
     return false;
 }
 
+void island_delta_builder::map_entities_to_remote(const entity_map &map) {
+    for (auto &entity : m_delta.m_created_entities) {
+        entity = map.locrem(entity);
+    }
+
+    for (auto &entity : m_delta.m_destroyed_entities) {
+        entity = map.locrem(entity);
+    }
+
+    for (auto &ptr : m_delta.m_created_components) {
+        if (ptr) {
+            ptr->map_entities_to_remote(map);
+        }
+    }
+
+    for (auto &ptr : m_delta.m_updated_components) {
+        if (ptr) {
+            ptr->map_entities_to_remote(map);
+        }
+    }
+
+    for (auto &ptr : m_delta.m_destroyed_components) {
+        if (ptr) {
+            ptr->map_entities_to_remote(map);
+        }
+    }
+}
+
 }

@@ -27,8 +27,8 @@
 #include "edyn/context/settings.hpp"
 #include "edyn/dynamics/material_mixing.hpp"
 #include "edyn//config/config.h"
-#include <cstddef>
 #include <entt/entity/registry.hpp>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <numeric>
@@ -64,6 +64,7 @@ island_coordinator::island_coordinator(entt::registry &registry)
     m_message_queue_handle.sink<msg::step_update>().connect<&island_coordinator::on_step_update>(*this);
     m_message_queue_handle.sink<msg::island_transfer_complete>().connect<&island_coordinator::on_island_transfer_complete>(*this);
 
+    create_worker();
     create_worker();
 }
 
@@ -750,26 +751,22 @@ void island_coordinator::on_island_transfer_complete(const message<msg::island_t
     auto &source_ctx = m_worker_ctxes[source_worker_index];
     auto resident_view = m_registry->view<island_worker_resident>();
 
-    for (auto remote_entity : msg.content.entities) {
-        if (!source_ctx->m_entity_map.has_rem(remote_entity)) {
-            continue;
-        }
-
-        auto local_entity = source_ctx->m_entity_map.remloc(remote_entity);
-        auto [resident] = resident_view.get(local_entity);
+    for (auto entity : msg.content.entities) {
+        auto [resident] = resident_view.get(entity);
         auto prev_worker_index = resident.worker_index;
         auto &prev_ctx = m_worker_ctxes[prev_worker_index];
         resident.worker_index = source_worker_index;
 
-        if (m_registry->any_of<graph_node>(local_entity)) {
-            prev_ctx->m_nodes.erase(local_entity);
-            source_ctx->m_nodes.insert(local_entity);
-        } else if (m_registry->any_of<graph_edge>(local_entity)) {
-            prev_ctx->m_edges.erase(local_entity);
-            source_ctx->m_edges.insert(local_entity);
-        } else if (m_registry->any_of<island_tag>(local_entity)) {
-            prev_ctx->m_islands.erase(local_entity);
-            source_ctx->m_islands.insert(local_entity);
+        if (m_registry->any_of<graph_node>(entity)) {
+            prev_ctx->m_nodes.erase(entity);
+            source_ctx->m_nodes.insert(entity);
+        } else if (m_registry->any_of<graph_edge>(entity)) {
+            prev_ctx->m_edges.erase(entity);
+            source_ctx->m_edges.insert(entity);
+        } else if (m_registry->any_of<island_tag>(entity)) {
+            prev_ctx->m_islands.erase(entity);
+            source_ctx->m_islands.insert(entity);
+            m_registry->remove<island_transferring_tag>(entity);
         }
     }
 }
@@ -788,7 +785,7 @@ void island_coordinator::update() {
     m_timestamp = performance_time();
 
     m_message_queue_handle.update();
-
+    balance_workers();
     init_new_nodes_and_edges();
     refresh_dirty_entities();
     sync();
@@ -862,7 +859,7 @@ void island_coordinator::balance_workers() {
         }
     }
 
-    if (smallest_idx == biggest_idx) {
+    if (smallest_idx == SIZE_MAX || biggest_idx == SIZE_MAX || smallest_idx == biggest_idx) {
         return;
     }
 
@@ -878,13 +875,16 @@ void island_coordinator::balance_workers() {
         }
     }
 
-    if (smallest_size + smallest_island_size < biggest_size) {
+    if (smallest_size + smallest_island_size < biggest_size &&
+        !m_registry->any_of<island_transferring_tag>(smallest_island_entity)) {
         // Move smallest island into smallest worker.
         auto &biggest_ctx = m_worker_ctxes[biggest_idx];
         auto &smallest_ctx = m_worker_ctxes[smallest_idx];
         message_dispatcher::global().send<msg::transfer_island_request>(
             biggest_ctx->message_queue_id(), m_message_queue_handle.identifier,
             smallest_island_entity, smallest_ctx->message_queue_id());
+
+        m_registry->emplace<island_transferring_tag>(smallest_island_entity);
 
         // Mark all entities in that island as unnassigned.
 

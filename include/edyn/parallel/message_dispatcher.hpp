@@ -6,7 +6,7 @@
 #include <utility>
 #include <vector>
 #include <entt/core/any.hpp>
-#include <entt/signal/fwd.hpp>
+#include <entt/signal/sigh.hpp>
 
 namespace edyn {
 
@@ -32,6 +32,7 @@ public:
         // TODO: create a new single-producer/single-consumer queue for each new source.
         auto lock = std::lock_guard(m_mutex);
         m_messages.emplace_back(any_message{source, entt::any(std::in_place_type_t<T>{}, std::forward<Args>(args)...)});
+        m_push_signal.publish();
     }
 
     template<typename Func>
@@ -45,9 +46,14 @@ public:
         }
     }
 
+    auto push_sink() {
+        return entt::sink{m_push_signal};
+    }
+
 private:
     mutable std::mutex m_mutex;
     std::vector<any_message> m_messages;
+    entt::sigh<void(void)> m_push_signal;
 };
 
 template<typename... MessageTypes>
@@ -80,6 +86,10 @@ public:
         m_queue->consume([&] (any_message &msg) {
             (maybe_consume_message<MessageTypes>(msg), ...);
         });
+    }
+
+    auto push_sink() {
+        return m_queue->push_sink();
     }
 
 private:

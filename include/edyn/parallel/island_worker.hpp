@@ -64,6 +64,7 @@ class island_worker final {
     void sync();
     void sync_dirty();
     void update();
+    void import_delta(const island_delta &);
     entt::entity create_island();
     void insert_to_island(entt::entity island_entity,
                           const std::vector<entt::entity> &nodes,
@@ -139,6 +140,7 @@ private:
     std::unique_ptr<island_delta_builder> m_delta_builder;
     bool m_importing_delta;
     bool m_destroying_node;
+    bool m_transferring_island;
 
     entity_set m_islands_to_split;
 

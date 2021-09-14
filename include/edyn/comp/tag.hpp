@@ -44,6 +44,11 @@ struct sleeping_tag {};
 struct sleeping_disabled_tag {};
 
 /**
+ *
+ */
+struct island_transferring_tag {};
+
+/**
  * Disabled entity.
  */
 struct disabled_tag {};
