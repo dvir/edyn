@@ -751,23 +751,28 @@ void island_coordinator::on_island_transfer_complete(const message<msg::island_t
     auto &source_ctx = m_worker_ctxes[source_worker_index];
     auto resident_view = m_registry->view<island_worker_resident>();
 
-    for (auto entity : msg.content.entities) {
-        auto [resident] = resident_view.get(entity);
+    for (auto remote_entity : msg.content.entities) {
+        auto local_entity = msg.content.entity_map.remloc(remote_entity);
+
+        auto [resident] = resident_view.get(local_entity);
         auto prev_worker_index = resident.worker_index;
         auto &prev_ctx = m_worker_ctxes[prev_worker_index];
         resident.worker_index = source_worker_index;
 
-        if (m_registry->any_of<graph_node>(entity)) {
-            prev_ctx->m_nodes.erase(entity);
-            source_ctx->m_nodes.insert(entity);
-        } else if (m_registry->any_of<graph_edge>(entity)) {
-            prev_ctx->m_edges.erase(entity);
-            source_ctx->m_edges.insert(entity);
-        } else if (m_registry->any_of<island_tag>(entity)) {
-            prev_ctx->m_islands.erase(entity);
-            source_ctx->m_islands.insert(entity);
-            m_registry->remove<island_transferring_tag>(entity);
+        if (m_registry->any_of<graph_node>(local_entity)) {
+            prev_ctx->m_nodes.erase(local_entity);
+            source_ctx->m_nodes.insert(local_entity);
+        } else if (m_registry->any_of<graph_edge>(local_entity)) {
+            prev_ctx->m_edges.erase(local_entity);
+            source_ctx->m_edges.insert(local_entity);
+        } else if (m_registry->any_of<island_tag>(local_entity)) {
+            prev_ctx->m_islands.erase(local_entity);
+            source_ctx->m_islands.insert(local_entity);
+            m_registry->remove<island_transferring_tag>(local_entity);
         }
+
+        prev_ctx->m_entity_map.erase_loc(local_entity);
+        source_ctx->m_entity_map.insert(remote_entity, local_entity);
     }
 }
 

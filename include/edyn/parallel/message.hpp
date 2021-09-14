@@ -54,6 +54,7 @@ struct transfer_island_request {
 
 struct transfer_island {
     island_delta delta;
+    entt::entity island_entity;
 };
 
 /**
@@ -63,6 +64,7 @@ struct transfer_island {
 struct island_transfer_complete {
     // All entities transferred.
     std::vector<entt::entity> entities;
+    edyn::entity_map entity_map;
 };
 
 /**

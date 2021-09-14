@@ -57,14 +57,14 @@ class island_worker final {
     void do_terminate();
     void init_new_nodes_and_edges();
     void init_new_shapes();
-    void insert_remote_node(entt::entity remote_entity);
+    void insert_remote_node(entt::entity remote_entity, const entity_map &entity_map);
     void maybe_go_to_sleep(entt::entity island_entity);
     bool could_go_to_sleep(entt::entity island_entity) const;
     void put_to_sleep(entt::entity island_entity);
     void sync();
     void sync_dirty();
     void update();
-    void import_delta(const island_delta &);
+    void import_delta(const island_delta &, entity_map &);
     entt::entity create_island();
     void insert_to_island(entt::entity island_entity,
                           const std::vector<entt::entity> &nodes,

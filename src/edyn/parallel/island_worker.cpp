@@ -292,7 +292,7 @@ void island_worker::on_destroy_rotated_mesh_list(entt::registry &registry, entt:
 }
 
 void island_worker::on_update_entities(const message<msg::update_entities> &msg) {
-    import_delta(msg.content.delta);
+    import_delta(msg.content.delta, m_entity_map);
 }
 
 void island_worker::on_transfer_island_request(const message<msg::transfer_island_request> &msg) {
@@ -315,13 +315,34 @@ void island_worker::on_transfer_island_request(const message<msg::transfer_islan
     auto &graph = m_registry.ctx<entity_graph>();
     auto node_view = m_registry.view<graph_node>();
     auto edge_view = m_registry.view<graph_edge>();
+    auto manifold_view = m_registry.view<contact_manifold>();
 
     builder->created(island_entity);
     builder->created_all(island_entity, m_registry);
+    builder->insert_entity_mapping(island_entity, m_entity_map.locrem(island_entity));
 
     for (auto entity : island.edges) {
         builder->created(entity);
         builder->created_all(entity, m_registry);
+
+        if (m_entity_map.has_loc(entity)) {
+            builder->insert_entity_mapping(entity, m_entity_map.locrem(entity));
+        }
+
+        if (manifold_view.contains(entity)) {
+            auto [manifold] = manifold_view.get(entity);
+            auto num_points = manifold.num_points();
+
+            for (size_t i = 0; i < num_points; ++i) {
+                auto contact_entity = manifold.point[i];
+                builder->created(contact_entity);
+                builder->created_all(contact_entity, m_registry);
+
+                if (m_entity_map.has_loc(contact_entity)) {
+                    builder->insert_entity_mapping(contact_entity, m_entity_map.locrem(contact_entity));
+                }
+            }
+        }
 
         auto [edge] = edge_view.get(entity);
         graph.remove_edge(edge.edge_index);
@@ -330,6 +351,10 @@ void island_worker::on_transfer_island_request(const message<msg::transfer_islan
     for (auto entity : island.nodes) {
         builder->created(entity);
         builder->created_all(entity, m_registry);
+
+        if (m_entity_map.has_loc(entity)) {
+            builder->insert_entity_mapping(entity, m_entity_map.locrem(entity));
+        }
 
         auto [node] = node_view.get(entity);
         graph.remove_node(node.node_index);
@@ -347,28 +372,57 @@ void island_worker::on_transfer_island_request(const message<msg::transfer_islan
 
     m_transferring_island = false;
 
-    message_dispatcher::global().send<msg::transfer_island>(msg.content.destination_id, message_queue_id(), builder->finish());
+    message_dispatcher::global().send<msg::transfer_island>(
+        msg.content.destination_id, message_queue_id(), builder->finish(), island_entity);
 }
 
 void island_worker::on_transfer_island(const message<msg::transfer_island> &msg) {
-    import_delta(msg.content.delta);
+    auto &delta = msg.content.delta;
+    auto w2w_entity_map = entity_map{}; // Temporary worker-to-worker entity map.
+    auto local_entity_map = entity_map{};
+    auto created_entities = std::vector<entt::entity>{};
 
-    // Entity mappings have been added to the current delta as part of the
-    // import process. Send these to the coordinator before the transfer
-    // completion message.
-    //message_dispatcher::global().send<msg::step_update>(m_coordinator_queue_id, m_message_queue.identifier, m_delta_builder->finish());
+    delta.m_entity_map.each([&] (auto coordinator_entity, auto worker_entity) {
+        auto local_entity = m_registry.create();
+        m_entity_map.insert(coordinator_entity, local_entity);
+        w2w_entity_map.insert(worker_entity, local_entity);
+        local_entity_map.insert(local_entity, coordinator_entity);
+        created_entities.push_back(local_entity);
+    });
 
-    message_dispatcher::global().send<msg::island_transfer_complete>(m_coordinator_queue_id, m_message_queue.identifier, msg.content.delta.created_entities());
-}
+    import_delta(delta, w2w_entity_map);
 
-void island_worker::import_delta(const island_delta &delta) {
-    m_importing_delta = true;
-
-    delta.import(m_registry, m_entity_map);
+    auto island_entity = w2w_entity_map.remloc(msg.content.island_entity);
+    auto &island = m_registry.emplace<edyn::island>(island_entity);
+    auto resident_view = m_registry.view<island_resident>();
 
     for (auto remote_entity : delta.created_entities()) {
-        if (!m_entity_map.has_rem(remote_entity)) continue;
-        auto local_entity = m_entity_map.remloc(remote_entity);
+        auto local_entity = w2w_entity_map.remloc(remote_entity);
+
+        if (resident_view.contains(local_entity)) {
+            auto [resident] = resident_view.get(local_entity);
+            resident.island_entity = island_entity;
+
+            if (m_registry.any_of<graph_node>(local_entity)) {
+                island.nodes.insert(local_entity);
+            } else if (m_registry.any_of<graph_edge>(local_entity)) {
+                island.edges.insert(local_entity);
+            }
+        }
+    }
+
+    message_dispatcher::global().send<msg::island_transfer_complete>(
+        m_coordinator_queue_id, m_message_queue.identifier, created_entities, local_entity_map);
+}
+
+void island_worker::import_delta(const island_delta &delta, entity_map &entity_map) {
+    m_importing_delta = true;
+
+    delta.import(m_registry, entity_map);
+
+    for (auto remote_entity : delta.created_entities()) {
+        if (!entity_map.has_rem(remote_entity)) continue;
+        auto local_entity = entity_map.remloc(remote_entity);
         m_delta_builder->insert_entity_mapping(remote_entity, local_entity);
     }
 
@@ -377,8 +431,8 @@ void island_worker::import_delta(const island_delta &delta) {
     auto &index_source = m_delta_builder->get_index_source();
 
     // Insert nodes in the graph for each rigid body.
-    auto insert_node = [this] (entt::entity remote_entity, auto &) {
-        insert_remote_node(remote_entity);
+    auto insert_node = [&] (entt::entity remote_entity, auto &) {
+        insert_remote_node(remote_entity, entity_map);
     };
 
     delta.created_for_each<dynamic_tag>(index_source, insert_node);
@@ -388,9 +442,9 @@ void island_worker::import_delta(const island_delta &delta) {
 
     // Insert edges in the graph for contact manifolds.
     delta.created_for_each<contact_manifold>(index_source, [&] (entt::entity remote_entity, const contact_manifold &manifold) {
-        if (!m_entity_map.has_rem(remote_entity)) return;
+        if (!entity_map.has_rem(remote_entity)) return;
 
-        auto local_entity = m_entity_map.remloc(remote_entity);
+        auto local_entity = entity_map.remloc(remote_entity);
         auto &node0 = node_view.get<graph_node>(manifold.body[0]);
         auto &node1 = node_view.get<graph_node>(manifold.body[1]);
         auto edge_index = graph.insert_edge(local_entity, node0.node_index, node1.node_index);
@@ -403,9 +457,9 @@ void island_worker::import_delta(const island_delta &delta) {
         // The contact manifold which owns them is added instead.
         if constexpr(std::is_same_v<std::decay_t<decltype(con)>, contact_constraint>) return;
 
-        if (!m_entity_map.has_rem(remote_entity)) return;
+        if (!entity_map.has_rem(remote_entity)) return;
 
-        auto local_entity = m_entity_map.remloc(remote_entity);
+        auto local_entity = entity_map.remloc(remote_entity);
         auto &node0 = node_view.get<graph_node>(con.body[0]);
         auto &node1 = node_view.get<graph_node>(con.body[1]);
         auto edge_index = graph.insert_edge(local_entity, node0.node_index, node1.node_index);
@@ -420,11 +474,11 @@ void island_worker::import_delta(const island_delta &delta) {
     auto cc_view = m_registry.view<contact_constraint>();
     auto mat_view = m_registry.view<material>();
     delta.created_for_each<contact_point>(index_source, [&] (entt::entity remote_entity, const contact_point &) {
-        if (!m_entity_map.has_rem(remote_entity)) {
+        if (!entity_map.has_rem(remote_entity)) {
             return;
         }
 
-        auto local_entity = m_entity_map.remloc(remote_entity);
+        auto local_entity = entity_map.remloc(remote_entity);
 
         if (cc_view.contains(local_entity)) {
             return;
@@ -440,9 +494,9 @@ void island_worker::import_delta(const island_delta &delta) {
     // When orientation is set manually, a few dependent components must be
     // updated, e.g. AABB, cached origin, inertia_world_inv, rotated meshes...
     delta.updated_for_each<orientation>(index_source, [&] (entt::entity remote_entity, const orientation &orn) {
-        if (!m_entity_map.has_rem(remote_entity)) return;
+        if (!entity_map.has_rem(remote_entity)) return;
 
-        auto local_entity = m_entity_map.remloc(remote_entity);
+        auto local_entity = entity_map.remloc(remote_entity);
 
         if (auto *origin = m_registry.try_get<edyn::origin>(local_entity)) {
             auto &com = m_registry.get<center_of_mass>(local_entity);
@@ -465,9 +519,9 @@ void island_worker::import_delta(const island_delta &delta) {
 
     // When position is set manually, the AABB and cached origin must be updated.
     delta.updated_for_each<position>(index_source, [&] (entt::entity remote_entity, const position &pos) {
-        if (!m_entity_map.has_rem(remote_entity)) return;
+        if (!entity_map.has_rem(remote_entity)) return;
 
-        auto local_entity = m_entity_map.remloc(remote_entity);
+        auto local_entity = entity_map.remloc(remote_entity);
 
         if (auto *origin = m_registry.try_get<edyn::origin>(local_entity)) {
             auto &com = m_registry.get<center_of_mass>(local_entity);
@@ -1197,10 +1251,10 @@ void island_worker::init_new_shapes() {
     m_new_compound_shapes.clear();
 }
 
-void island_worker::insert_remote_node(entt::entity remote_entity) {
-    if (!m_entity_map.has_rem(remote_entity)) return;
+void island_worker::insert_remote_node(entt::entity remote_entity, const entity_map &entity_map) {
+    if (!entity_map.has_rem(remote_entity)) return;
 
-    auto local_entity = m_entity_map.remloc(remote_entity);
+    auto local_entity = entity_map.remloc(remote_entity);
     auto non_connecting = !m_registry.any_of<procedural_tag>(local_entity);
 
     auto &graph = m_registry.ctx<entity_graph>();

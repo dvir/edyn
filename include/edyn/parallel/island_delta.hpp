@@ -99,8 +99,8 @@ public:
 
     double m_timestamp;
 
-private:
     entity_map m_entity_map;
+private:
     std::vector<entt::entity> m_created_entities;
     std::vector<entt::entity> m_destroyed_entities;
 
