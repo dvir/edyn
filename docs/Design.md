@@ -257,7 +257,7 @@ The `edyn::island_worker` is dynamically allocated by the `edyn::island_coordina
 
 The physics simulation step happens in each island worker independently. This is the order of major updates:
 
-- Process messages and island deltas, thus synchronizing state with the main registry, which might create new entities in the local registry.
+- Process messages and snapshots, thus synchronizing state with the main registry, which might create new entities in the local registry.
 - Detect collision for new manifolds that have been imported from the main registry.
 - Create contact constraints for new contact points. This includes new points generated in the collision detection of imported manifolds and contact points that were created in the previous physics step.
 - Solve restitution. This is done before applying gravity to prevent resting bodies from bouncing.
@@ -267,11 +267,11 @@ The physics simulation step happens in each island worker independently. This is
 - Integrate velocities to obtain new positions and orientations.
 - Now that rigid bodies have moved, run the broad-phase collision detection to create/destroy collision pairs (i.e. `edyn::contact_manifold`).
 - Perform narrow-phase collision detection to generate new contact points. Contact constraints are not created yet.
-- Send island delta to coordinator.
+- Send registry snapshot to coordinator.
 
 ### Merging and Splitting Islands
 
-The island worker has to update the situation of its islands every time the entity graph changes. An island is a connected component in the entity graph, thus whenever a node or edge is added or removed, the connected components must be recalculated and the islands could be merged or split in the process.
+The island worker has to update the status of its islands every time the entity graph changes. An island is a connected component in the entity graph, thus whenever a node or edge is added or removed, the connected components must be recalculated and the islands could be merged or split in the process.
 
 When nodes or edges are created, the `edyn::entity_graph::reach` function is used to find an island where the new entities should be inserted.
 
@@ -291,11 +291,17 @@ Rigid bodies and constraints created by the user might cause islands in differen
 
 Using the `edyn::entity_graph::reach` function, the coordinator can determine into which island new rigid bodies and constraints should be inserted. If the new bodies are not connected to any existing body that's already in an island, they're simply dispatched into the least busy island worker, which will assign a new island to them. If they're connected to an existing body then they are sent to the island worker that owns the island that body is in. In the case where a rigid body is created in a situation where it bridges two islands from different workers together, one of the islands is first moved to the other worker and only then the new rigid body and constraints are created in that same worker. Up to this point, in the main registry, the new entities continue to be unassigned to an island. Only after the confirmation that the island has moved is received, their `edyn::island_resident` gets updated with the new island entity.
 
+Workers need an _island graph_ (where islands are nodes and an edge exists between two nodes if their corresponding islands have their AABBs intersecting) because an island cannot be transferred to another worker by itself if its AABB is intersecting the AABB of another island. The reason being that this transfer would cause a ping-pong effect where the coordinator would immediately find that the island that is now in another worker intersects the AABB of another island that is still in the first worker and will ask for it to be transferred back. Thus, entire connected components of islands must be transferred.
+
+In the case of a load balancing operation, the coordinator picks the least busy worker and inserts its status into a `edyn::msg::balance_load` message, which contains number of nodes, edges and islands, and sends it to the most busy worker. When received, the busy worker will look for one or more connected components in the island graph which if transferred, will make the number of nodes and edges more closely match that of the destination worker, thus balancing the work better. It's possible that no islands are transferred if the current configuration is deemed optimal. That means the message sent by the coordinator is simply a suggestion.
+
+In the case of an island AABB intersection, the coordinator crafts a `edyn::msg::island_intersection` message containing a list of AABBs of all islands in the least busy of the two workers and sends it to the most busy of the two. Upon receiving such message, the worker will query its island graph for each AABB and find connected components of islands which intersect the AABBs of the islands in the other worker and will transfer these.
+
 To effectively move an island from one worker into another, the coordinator sends a message to one of the workers containing the island entity (or the island node entity, e.g. a rigid body, from which the island entity can be obtained) and the id of the message queue of the destination worker where it must post a `edyn::msg::transfer_island` message containing all entities and components in that island. All entities are deleted in the source worker immediately after. Upon receiving the new island, the worker instantiates all entities and components in its private registry and notifies the coordinator that the island has been received.
 
 The `edyn::msg::transfer_island` contains entities in the space of the source worker, along with an entity map which maps entities from the source worker to the coordinator space and vice-versa. At the time the message is assembled by the source worker, not all entities will have a mapping to the coordinator space, since an entity such as a contact point could have just been created and not yet have been sent to the coordinator or the entity map might not have yet been received by the worker. Thus, when importing the entities and components from the `edyn::msg::transfer_island`, not all entities will have an entity map added in the destination worker. The mappings that are not available, are included in the `edyn::msg::island_transfer_complete` message along with the entity from the source worker. When processing that message, the coordinator will use the old mapping from the source worker to find which entity it refers to in the coordinator's entity map, and will then add the entity map with the new entity from the destination worker and add that mapping to the current delta of that worker, and also removed it from the entity map of the source worker.
 
-During the period where an island is being moved into another worker, the coordinator cannot request the components to be updated in the worker because they're being moved and might not be there anymore by the time the message is received, which will cause the changes to not be applied. If a refresh is requested by the user while an island transfer is happening, the changes will have to be stored in a temporary `edyn::registry_delta` which will then be sent to the destination worker once it acknowledges the island has been transferred via a `edyn::msg::island_transfer_complete` message.
+During the period where an island is being moved into another worker, the coordinator might request the components to be updated in an entity that is not in the same worker anymore. The worker needs to keep a history of entities that have moved and route updates to the worker they should be in.
 
 Ideally, the rigid bodies in an island worker should have close proximity. For example, in a simulation where there's a flat ground plane and over a hundred boxes scattered all over it, where islands have 1 or 2 boxes each, it is desirable to have groups of boxes that are near each other to be located in one island worker. The coordinator can employ a clustering algorithm such as K-means to distribute rigid bodies among workers in such cases.
 
