@@ -4,6 +4,7 @@
 #include <vector>
 #include <memory>
 #include <entt/entity/fwd.hpp>
+#include "edyn/comp/tag.hpp"
 #include "edyn/parallel/island_worker_context.hpp"
 #include "edyn/parallel/island_delta_builder.hpp"
 #include "edyn/parallel/message.hpp"
@@ -37,11 +38,13 @@ class island_coordinator final {
     using island_aabb_view_t = entt::basic_view<entt::entity, entt::exclude_t<>, island_aabb>;
     using island_worker_resident_view_t = entt::basic_view<entt::entity, entt::exclude_t<>, island_worker_resident>;
     using multi_island_worker_resident_view_t = entt::basic_view<entt::entity, entt::exclude_t<>, multi_island_worker_resident>;
+    using island_transferring_view_t = entt::basic_view<entt::entity, entt::exclude_t<>, island_transferring_tag>;
 
     entity_pair_vector find_intersecting_islands(
         entt::entity island_entityA, const aabb_view_t &,
         const island_aabb_view_t &, const island_worker_resident_view_t &,
-        const multi_island_worker_resident_view_t &) const;
+        const multi_island_worker_resident_view_t &,
+        const island_transferring_view_t &) const;
 
     void process_intersecting_entities(
         entity_pair, const island_aabb_view_t &, const island_worker_resident_view_t &,

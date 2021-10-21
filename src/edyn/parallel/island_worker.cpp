@@ -369,6 +369,7 @@ void island_worker::on_transfer_island_request(const message<msg::transfer_islan
     }
 
     m_registry.destroy(island_entity);
+    m_entity_map.erase_loc(island_entity);
 
     m_transferring_island = false;
 
@@ -713,10 +714,6 @@ void island_worker::begin_step() {
         (*settings.external_system_pre_step)(m_registry);
     }
 
-    // Perform splits after processing messages from coodinator and running
-    // external logic, which could've destroyed nodes or edges.
-    split_islands();
-
     init_new_nodes_and_edges();
 
     init_new_shapes();
@@ -731,6 +728,10 @@ void island_worker::begin_step() {
     // or `contact_constraint` can be observed to capture the initial impact
     // of a new contact.
     m_nphase.create_contact_constraints();
+
+    // Perform splits after processing messages from coodinator and running
+    // external logic, which could've destroyed nodes or edges.
+    split_islands();
 
     m_state = state::solve;
 }
@@ -750,6 +751,7 @@ bool island_worker::run_broadphase() {
         return false;
     } else {
         m_bphase.update();
+        init_new_nodes_and_edges();
         m_state = state::narrowphase;
         return true;
     }
@@ -758,6 +760,7 @@ bool island_worker::run_broadphase() {
 void island_worker::finish_broadphase() {
     EDYN_ASSERT(m_state == state::broadphase_async);
     m_bphase.finish_async_update();
+    init_new_nodes_and_edges();
     m_state = state::narrowphase;
 }
 
@@ -1081,6 +1084,10 @@ void island_worker::merge_islands(const std::vector<entt::entity> &island_entiti
 
     for (auto entity : other_island_entities) {
         m_delta_builder->destroyed(entity);
+
+        if (m_entity_map.has_loc(entity)) {
+            m_entity_map.erase_loc(entity);
+        }
     }
 }
 
@@ -1102,6 +1109,11 @@ void island_worker::split_islands() {
             EDYN_ASSERT(island.edges.empty());
             m_registry.destroy(island_entity);
             m_delta_builder->destroyed(island_entity);
+
+            if (m_entity_map.has_loc(island_entity)) {
+                m_entity_map.erase_loc(island_entity);
+            }
+
             continue;
         }
 

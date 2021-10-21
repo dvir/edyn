@@ -463,6 +463,7 @@ void island_coordinator::insert_to_worker(size_t worker_index,
 
 void island_coordinator::intersect_islands() {
     std::vector<entt::entity> awake_island_entities;
+    auto transferring_view = m_registry->view<island_transferring_tag>();
 
     // Update island AABBs in tree (ignore sleeping islands).
     auto exclude_sleeping = entt::exclude_t<sleeping_tag>{};
@@ -470,7 +471,11 @@ void island_coordinator::intersect_islands() {
         .each([&] (auto island_entity, tree_resident &node, island_aabb &aabb)
     {
         m_island_tree.move(node.id, aabb);
-        awake_island_entities.push_back(island_entity);
+
+        // Do not process islands that are being transferred.
+        if (!transferring_view.contains(island_entity)) {
+            awake_island_entities.push_back(island_entity);
+        }
     });
 
     if (awake_island_entities.empty()) {
@@ -498,11 +503,17 @@ void island_coordinator::intersect_islands() {
             auto island_entityA = awake_island_entities[index];
             m_pair_results[index] = find_intersecting_islands(
                 island_entityA, aabb_view, island_aabb_view,
-                island_worker_resident_view, multi_island_worker_resident_view);
+                island_worker_resident_view, multi_island_worker_resident_view,
+                transferring_view);
         });
 
         for (auto &results : m_pair_results) {
             for (auto &pair : results) {
+                if (transferring_view.contains(pair.first) ||
+                    transferring_view.contains(pair.second)) {
+                    continue;
+                }
+
                 process_intersecting_entities(pair, island_aabb_view,
                                               island_worker_resident_view,
                                               multi_island_worker_resident_view);
@@ -514,7 +525,8 @@ void island_coordinator::intersect_islands() {
         for (auto island_entityA : awake_island_entities) {
             auto pairs = find_intersecting_islands(
                 island_entityA, aabb_view, island_aabb_view,
-                island_worker_resident_view, multi_island_worker_resident_view);
+                island_worker_resident_view, multi_island_worker_resident_view,
+                transferring_view);
 
             for (auto &pair : pairs) {
                 process_intersecting_entities(pair, island_aabb_view,
@@ -529,7 +541,10 @@ entity_pair_vector island_coordinator::find_intersecting_islands(
         entt::entity island_entityA, const aabb_view_t &aabb_view,
         const island_aabb_view_t &island_aabb_view,
         const island_worker_resident_view_t &island_worker_resident_view,
-        const multi_island_worker_resident_view_t &multi_island_worker_resident_view) const {
+        const multi_island_worker_resident_view_t &multi_island_worker_resident_view,
+        const island_transferring_view_t &transferring_view) const {
+
+    EDYN_ASSERT(!transferring_view.contains(island_entityA));
 
     auto island_aabbA = island_aabb_view.get<edyn::island_aabb>(island_entityA).inset(-m_island_aabb_offset);
     auto &residentA = island_worker_resident_view.get<island_worker_resident>(island_entityA);
@@ -541,6 +556,11 @@ entity_pair_vector island_coordinator::find_intersecting_islands(
         auto island_entityB = m_island_tree.get_node(idB).entity;
 
         if (island_entityA == island_entityB) {
+            return;
+        }
+
+        // Ignore islands that are being transferred.
+        if (transferring_view.contains(island_entityB)) {
             return;
         }
 
@@ -577,7 +597,17 @@ void island_coordinator::process_intersecting_entities(
     if (island_aabb_view.contains(pair.second)) {
         // Transfer island from one worker into the other.
         // TODO
+        auto [first_resident] = island_worker_resident_view.get(pair.first);
+        auto [second_resident] = island_worker_resident_view.get(pair.second);
+        EDYN_ASSERT(first_resident.worker_index != second_resident.worker_index);
+        auto &first_ctx = m_worker_ctxes[first_resident.worker_index];
+        auto &second_ctx = m_worker_ctxes[second_resident.worker_index];
 
+        message_dispatcher::global().send<msg::transfer_island_request>(
+            first_ctx->message_queue_id(), m_message_queue_handle.identifier,
+            pair.first, second_ctx->message_queue_id());
+
+        m_registry->emplace<island_transferring_tag>(pair.first);
     } else {
         // Insert non-procedural node into the worker where the island
         // is located.
