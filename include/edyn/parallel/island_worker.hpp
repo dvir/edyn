@@ -4,17 +4,13 @@
 #include <mutex>
 #include <memory>
 #include <atomic>
-#include <entt/entity/fwd.hpp>
+#include <entt/entity/registry.hpp>
 #include <condition_variable>
 #include "edyn/parallel/job.hpp"
 #include "edyn/dynamics/solver.hpp"
 #include "edyn/parallel/message.hpp"
-#include "edyn/parallel/message_dispatcher.hpp"
-#include "edyn/collision/narrowphase.hpp"
-#include "edyn/collision/broadphase_worker.hpp"
 #include "edyn/parallel/entity_graph.hpp"
 #include "edyn/util/entity_map.hpp"
-#include "edyn/util/entity_set.hpp"
 
 namespace edyn {
 
@@ -45,11 +41,11 @@ class island_worker final {
     void process_messages();
     bool should_step();
     void begin_step();
-    void run_solver();
     bool run_broadphase();
     void finish_broadphase();
     bool run_narrowphase();
     void finish_narrowphase();
+    void run_solver();
     void finish_step();
     void reschedule_now();
     void maybe_reschedule();
@@ -85,7 +81,6 @@ public:
     void reschedule();
 
     void on_destroy_contact_manifold(entt::registry &, entt::entity);
-    void on_destroy_contact_point(entt::registry &, entt::entity);
     void on_construct_graph_node(entt::registry &, entt::entity);
     void on_construct_graph_edge(entt::registry &, entt::entity);
     void on_destroy_graph_node(entt::registry &, entt::entity);
@@ -118,8 +113,6 @@ public:
 private:
     entt::registry m_registry;
     entity_map m_entity_map;
-    broadphase_worker m_bphase;
-    narrowphase m_nphase;
     solver m_solver;
     message_queue_handle<
         msg::set_paused,
@@ -142,7 +135,7 @@ private:
     bool m_destroying_node;
     bool m_transferring_island;
 
-    entity_set m_islands_to_split;
+    entt::sparse_set m_islands_to_split;
 
     std::vector<entt::entity> m_new_graph_nodes;
     std::vector<entt::entity> m_new_graph_edges;

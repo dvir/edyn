@@ -1,11 +1,12 @@
 #include "edyn/parallel/island_worker.hpp"
+#include "edyn/collision/broadphase_worker.hpp"
 #include "edyn/collision/contact_manifold.hpp"
 #include "edyn/collision/contact_point.hpp"
+#include "edyn/collision/narrowphase.hpp"
 #include "edyn/comp/orientation.hpp"
 #include "edyn/comp/tag.hpp"
 #include "edyn/config/config.h"
-#include "edyn/math/quaternion.hpp"
-#include "edyn/math/vector3.hpp"
+#include "edyn/math/transform.hpp"
 #include "edyn/parallel/job.hpp"
 #include "edyn/comp/island.hpp"
 #include "edyn/parallel/message_dispatcher.hpp"
@@ -20,7 +21,6 @@
 #include "edyn/parallel/island_delta_builder.hpp"
 #include "edyn/parallel/message.hpp"
 #include "edyn/serialization/memory_archive.hpp"
-#include "edyn/constraints/constraint_impulse.hpp"
 #include "edyn/comp/dirty.hpp"
 #include "edyn/comp/graph_node.hpp"
 #include "edyn/comp/graph_edge.hpp"
@@ -32,10 +32,9 @@
 #include "edyn/util/collision_util.hpp"
 #include "edyn/context/settings.hpp"
 #include <entt/entity/utility.hpp>
-#include <memory>
 #include <variant>
+#include <memory>
 #include <set>
-#include <entt/entity/registry.hpp>
 
 namespace edyn {
 
@@ -56,10 +55,9 @@ void island_worker_func(job::data_type &data) {
 }
 
 island_worker::island_worker(const std::string &name, const settings &settings,
-                             const material_mix_table &material_table, message_queue_identifier coordinator_queue_id)
+                             const material_mix_table &material_table,
+                             message_queue_identifier coordinator_queue_id)
     : m_state(state::init)
-    , m_bphase(m_registry)
-    , m_nphase(m_registry)
     , m_solver(m_registry)
     , m_delta_builder((*settings.make_island_delta_builder)())
     , m_importing_delta(false)
@@ -76,6 +74,8 @@ island_worker::island_worker(const std::string &name, const settings &settings,
         msg::transfer_island>(name.c_str()))
     , m_coordinator_queue_id(coordinator_queue_id)
 {
+    m_registry.set<broadphase_worker>(m_registry);
+    m_registry.set<narrowphase>(m_registry);
     m_registry.set<entity_graph>();
     m_registry.set<edyn::settings>(settings);
     m_registry.set<material_mix_table>(material_table);
@@ -104,7 +104,6 @@ void island_worker::init() {
     m_registry.on_destroy<graph_edge>().connect<&island_worker::on_destroy_graph_edge>(*this);
     m_registry.on_destroy<island_resident>().connect<&island_worker::on_destroy_island_resident>(*this);
     m_registry.on_destroy<contact_manifold>().connect<&island_worker::on_destroy_contact_manifold>(*this);
-    m_registry.on_destroy<contact_point>().connect<&island_worker::on_destroy_contact_point>(*this);
     m_registry.on_construct<polyhedron_shape>().connect<&island_worker::on_construct_polyhedron_shape>(*this);
     m_registry.on_construct<compound_shape>().connect<&island_worker::on_construct_compound_shape>(*this);
     m_registry.on_destroy<rotated_mesh_list>().connect<&island_worker::on_destroy_rotated_mesh_list>(*this);
@@ -132,7 +131,8 @@ void island_worker::init() {
 
     // Run broadphase to initialize the internal dynamic trees with the
     // imported AABBs.
-    m_bphase.update();
+    auto &bphase = m_registry.ctx<broadphase_worker>();
+    bphase.update();
 
     m_state = state::step;
 }
@@ -149,40 +149,8 @@ void island_worker::on_destroy_contact_manifold(entt::registry &registry, entt::
         m_delta_builder->destroyed(entity);
     }
 
-    auto &manifold = registry.get<contact_manifold>(entity);
-    auto num_points = manifold.num_points();
-
-    for (size_t i = 0; i < num_points; ++i) {
-        auto contact_entity = manifold.point[i];
-
-        if (!importing) {
-            registry.destroy(contact_entity);
-        }
-
-        if (!importing && !transferring) {
-            m_delta_builder->destroyed(contact_entity);
-        }
-
-        if (m_entity_map.has_loc(contact_entity)) {
-            m_entity_map.erase_loc(contact_entity);
-        }
-    }
-
     // Mapping might not yet exist if this entity was just created locally and
     // the coordinator has not yet replied back with the main entity id.
-    if (m_entity_map.has_loc(entity)) {
-        m_entity_map.erase_loc(entity);
-    }
-}
-
-void island_worker::on_destroy_contact_point(entt::registry &registry, entt::entity entity) {
-    const auto importing = m_importing_delta;
-    const auto transferring = m_transferring_island;
-
-    if (!importing && !transferring) {
-        m_delta_builder->destroyed(entity);
-    }
-
     if (m_entity_map.has_loc(entity)) {
         m_entity_map.erase_loc(entity);
     }
@@ -272,7 +240,7 @@ void island_worker::on_destroy_island_resident(entt::registry &registry, entt::e
     stats.num_edges = island.edges.size();
     m_delta_builder->updated(resident.island_entity, stats);
 
-    m_islands_to_split.insert(resident.island_entity);
+    m_islands_to_split.emplace(resident.island_entity);
 }
 
 void island_worker::on_construct_polyhedron_shape(entt::registry &registry, entt::entity entity) {
@@ -315,7 +283,6 @@ void island_worker::on_transfer_island_request(const message<msg::transfer_islan
     auto &graph = m_registry.ctx<entity_graph>();
     auto node_view = m_registry.view<graph_node>();
     auto edge_view = m_registry.view<graph_edge>();
-    auto manifold_view = m_registry.view<contact_manifold>();
 
     builder->created(island_entity);
     builder->created_all(island_entity, m_registry);
@@ -327,21 +294,6 @@ void island_worker::on_transfer_island_request(const message<msg::transfer_islan
 
         if (m_entity_map.has_loc(entity)) {
             builder->insert_entity_mapping(entity, m_entity_map.locrem(entity));
-        }
-
-        if (manifold_view.contains(entity)) {
-            auto [manifold] = manifold_view.get(entity);
-            auto num_points = manifold.num_points();
-
-            for (size_t i = 0; i < num_points; ++i) {
-                auto contact_entity = manifold.point[i];
-                builder->created(contact_entity);
-                builder->created_all(contact_entity, m_registry);
-
-                if (m_entity_map.has_loc(contact_entity)) {
-                    builder->insert_entity_mapping(contact_entity, m_entity_map.locrem(contact_entity));
-                }
-            }
         }
 
         auto [edge] = edge_view.get(entity);
@@ -405,9 +357,9 @@ void island_worker::on_transfer_island(const message<msg::transfer_island> &msg)
             resident.island_entity = island_entity;
 
             if (m_registry.any_of<graph_node>(local_entity)) {
-                island.nodes.insert(local_entity);
+                island.nodes.emplace(local_entity);
             } else if (m_registry.any_of<graph_edge>(local_entity)) {
-                island.edges.insert(local_entity);
+                island.edges.emplace(local_entity);
             }
         }
     }
@@ -423,79 +375,42 @@ void island_worker::import_delta(const island_delta &delta, entity_map &entity_m
 
     for (auto remote_entity : delta.created_entities()) {
         if (!entity_map.has_rem(remote_entity)) continue;
+        if (m_delta_builder->has_rem(remote_entity)) continue;
         auto local_entity = entity_map.remloc(remote_entity);
         m_delta_builder->insert_entity_mapping(remote_entity, local_entity);
     }
 
     auto &graph = m_registry.ctx<entity_graph>();
     auto node_view = m_registry.view<graph_node>();
-    auto &index_source = m_delta_builder->get_index_source();
 
     // Insert nodes in the graph for each rigid body.
     auto insert_node = [&] (entt::entity remote_entity, auto &) {
         insert_remote_node(remote_entity, entity_map);
     };
 
-    delta.created_for_each<dynamic_tag>(index_source, insert_node);
-    delta.created_for_each<static_tag>(index_source, insert_node);
-    delta.created_for_each<kinematic_tag>(index_source, insert_node);
-    delta.created_for_each<external_tag>(index_source, insert_node);
+    delta.created_for_each<dynamic_tag>(insert_node);
+    delta.created_for_each<static_tag>(insert_node);
+    delta.created_for_each<kinematic_tag>(insert_node);
+    delta.created_for_each<external_tag>(insert_node);
 
-    // Insert edges in the graph for contact manifolds.
-    delta.created_for_each<contact_manifold>(index_source, [&] (entt::entity remote_entity, const contact_manifold &manifold) {
-        if (!entity_map.has_rem(remote_entity)) return;
+    // Insert edges in the graph for constraints.
+    delta.created_for_each(constraints_tuple, [&] (entt::entity remote_entity, const auto &con) {
+        if (!m_entity_map.has_rem(remote_entity)) return;
 
-        auto local_entity = entity_map.remloc(remote_entity);
-        auto &node0 = node_view.get<graph_node>(manifold.body[0]);
-        auto &node1 = node_view.get<graph_node>(manifold.body[1]);
-        auto edge_index = graph.insert_edge(local_entity, node0.node_index, node1.node_index);
-        m_registry.emplace<graph_edge>(local_entity, edge_index);
-    });
+        auto local_entity = m_entity_map.remloc(remote_entity);
 
-    // Insert edges in the graph for constraints (except contact constraints).
-    delta.created_for_each(constraints_tuple, index_source, [&] (entt::entity remote_entity, const auto &con) {
-        // Contact constraints are not added as edges to the graph.
-        // The contact manifold which owns them is added instead.
-        if constexpr(std::is_same_v<std::decay_t<decltype(con)>, contact_constraint>) return;
+        if (m_registry.any_of<graph_edge>(local_entity)) return;
 
-        if (!entity_map.has_rem(remote_entity)) return;
-
-        auto local_entity = entity_map.remloc(remote_entity);
         auto &node0 = node_view.get<graph_node>(con.body[0]);
         auto &node1 = node_view.get<graph_node>(con.body[1]);
         auto edge_index = graph.insert_edge(local_entity, node0.node_index, node1.node_index);
         m_registry.emplace<graph_edge>(local_entity, edge_index);
     });
 
-    // New contact points might be coming from another island after a merge or
-    // split and they might not yet have a contact constraint associated with
-    // them if they were just created in the last step of the island where it's
-    // coming from.
-    auto cp_view = m_registry.view<contact_point>();
-    auto cc_view = m_registry.view<contact_constraint>();
-    auto mat_view = m_registry.view<material>();
-    delta.created_for_each<contact_point>(index_source, [&] (entt::entity remote_entity, const contact_point &) {
-        if (!entity_map.has_rem(remote_entity)) {
-            return;
-        }
-
-        auto local_entity = entity_map.remloc(remote_entity);
-
-        if (cc_view.contains(local_entity)) {
-            return;
-        }
-
-        auto &cp = cp_view.get<contact_point>(local_entity);
-
-        if (mat_view.contains(cp.body[0]) && mat_view.contains(cp.body[1])) {
-            create_contact_constraint(m_registry, local_entity, cp);
-        }
-    });
-
     // When orientation is set manually, a few dependent components must be
     // updated, e.g. AABB, cached origin, inertia_world_inv, rotated meshes...
-    delta.updated_for_each<orientation>(index_source, [&] (entt::entity remote_entity, const orientation &orn) {
-        if (!entity_map.has_rem(remote_entity)) return;
+    delta.updated_for_each<orientation>([&] (entt::entity remote_entity, const orientation &orn) {
+        if (!m_entity_map.has_rem(remote_entity)) return;
 
         auto local_entity = entity_map.remloc(remote_entity);
 
@@ -519,8 +434,8 @@ void island_worker::import_delta(const island_delta &delta, entity_map &entity_m
     });
 
     // When position is set manually, the AABB and cached origin must be updated.
-    delta.updated_for_each<position>(index_source, [&] (entt::entity remote_entity, const position &pos) {
-        if (!entity_map.has_rem(remote_entity)) return;
+    delta.updated_for_each<position>([&] (entt::entity remote_entity, const position &pos) {
+        if (!m_entity_map.has_rem(remote_entity)) return;
 
         auto local_entity = entity_map.remloc(remote_entity);
 
@@ -552,15 +467,6 @@ void island_worker::wake_up_island(entt::entity island_entity) {
     for (auto entity : island.edges) {
         m_registry.remove<sleeping_tag>(entity);
         m_delta_builder->destroyed<sleeping_tag>(entity);
-
-        if (auto *manifold = m_registry.try_get<contact_manifold>(entity)) {
-            auto num_points = manifold->num_points();
-
-            for (size_t i = 0; i < num_points; ++i) {
-                auto contact_entity = manifold->point[i];
-                m_registry.remove<sleeping_tag>(contact_entity);
-            }
-        }
     }
 }
 
@@ -585,9 +491,11 @@ void island_worker::sync() {
     });
 
     // Update continuous components.
+    auto &settings = m_registry.ctx<edyn::settings>();
+    auto &index_source = *settings.index_source;
     m_registry.view<continuous>().each([&] (entt::entity entity, continuous &cont) {
         for (size_t i = 0; i < cont.size; ++i) {
-            m_delta_builder->updated(entity, m_registry, cont.types[i]);
+            m_delta_builder->updated(entity, m_registry, index_source.type_id_of(cont.indices[i]));
         }
     });
 
@@ -626,9 +534,9 @@ void island_worker::update() {
 
         if (should_step()) {
             begin_step();
-            run_solver();
             if (run_broadphase()) {
                 if (run_narrowphase()) {
+                    run_solver();
                     finish_step();
                     maybe_reschedule();
                 }
@@ -644,6 +552,7 @@ void island_worker::update() {
         break;
     case state::solve:
         run_solver();
+        finish_step();
         reschedule_now();
         break;
     case state::broadphase:
@@ -654,18 +563,21 @@ void island_worker::update() {
     case state::broadphase_async:
         finish_broadphase();
         if (run_narrowphase()) {
+            run_solver();
             finish_step();
             maybe_reschedule();
         }
         break;
     case state::narrowphase:
         if (run_narrowphase()) {
+            run_solver();
             finish_step();
             maybe_reschedule();
         }
         break;
     case state::narrowphase_async:
         finish_narrowphase();
+        run_solver();
         finish_step();
         maybe_reschedule();
         break;
@@ -714,44 +626,23 @@ void island_worker::begin_step() {
         (*settings.external_system_pre_step)(m_registry);
     }
 
-    init_new_nodes_and_edges();
-
+    // Initialize new shapes. Basically, create rotated meshes for new
+    // imported polyhedron shapes.
     init_new_shapes();
 
-    // Create new contact constraints at the beginning of the step. Since
-    // contact points are created at the end of a step, creating constraints
-    // at that point would mean that they'd have zero applied impulse,
-    // which leads to contact point construction observers not getting the
-    // value of the initial impulse of a new contact. Doing it here, means
-    // that at the end of the step, the `constraint_impulse` will have the
-    // value of the impulse applied and the construction of `constraint_impulse`
-    // or `contact_constraint` can be observed to capture the initial impact
-    // of a new contact.
-    m_nphase.create_contact_constraints();
-
-    // Perform splits after processing messages from coodinator and running
-    // external logic, which could've destroyed nodes or edges.
-    split_islands();
-
-    m_state = state::solve;
-}
-
-void island_worker::run_solver() {
-    EDYN_ASSERT(m_state == state::solve);
-    m_solver.update(m_registry.ctx<edyn::settings>().fixed_dt);
     m_state = state::broadphase;
 }
 
 bool island_worker::run_broadphase() {
     EDYN_ASSERT(m_state == state::broadphase);
+    auto &bphase = m_registry.ctx<broadphase_worker>();
 
-    if (m_bphase.parallelizable()) {
+    if (bphase.parallelizable()) {
         m_state = state::broadphase_async;
-        m_bphase.update_async(m_this_job);
+        bphase.update_async(m_this_job);
         return false;
     } else {
-        m_bphase.update();
-        init_new_nodes_and_edges();
+        bphase.update();
         m_state = state::narrowphase;
         return true;
     }
@@ -759,22 +650,23 @@ bool island_worker::run_broadphase() {
 
 void island_worker::finish_broadphase() {
     EDYN_ASSERT(m_state == state::broadphase_async);
-    m_bphase.finish_async_update();
-    init_new_nodes_and_edges();
+    auto &bphase = m_registry.ctx<broadphase_worker>();
+    bphase.finish_async_update();
     m_state = state::narrowphase;
 }
 
 bool island_worker::run_narrowphase() {
     EDYN_ASSERT(m_state == state::narrowphase);
+    auto &nphase = m_registry.ctx<narrowphase>();
 
     // Narrow-phase is run right after broad-phase, where manifolds could have
     // been destroyed, potentially causing islands to split. Thus, split any
     // pending islands before proceeding.
     split_islands();
 
-    if (m_nphase.parallelizable()) {
+    if (nphase.parallelizable()) {
         m_state = state::narrowphase_async;
-        m_nphase.update_async(m_this_job);
+        nphase.update_async(m_this_job);
         return false;
     } else {
         // Separating contact points will be destroyed in the next call. Move
@@ -783,8 +675,8 @@ bool island_worker::run_narrowphase() {
         // points that were created in this step and are going to be destroyed
         // next to be missing in the island delta.
         sync_dirty();
-        m_nphase.update();
-        m_state = state::finish_step;
+        nphase.update();
+        m_state = state::solve;
         return true;
     }
 }
@@ -796,7 +688,14 @@ void island_worker::finish_narrowphase() {
     // the dirty contact points into the current island delta before that
     // happens.
     sync_dirty();
-    m_nphase.finish_async_update();
+    auto &nphase = m_registry.ctx<narrowphase>();
+    nphase.finish_async_update();
+    m_state = state::solve;
+}
+
+void island_worker::run_solver() {
+    EDYN_ASSERT(m_state == state::solve);
+    m_solver.update(m_registry.ctx<edyn::settings>().fixed_dt);
     m_state = state::finish_step;
 }
 
@@ -1139,9 +1038,11 @@ void island_worker::split_islands() {
 
         // Traverse graph starting at the remaining nodes to find the other
         // connected components and create new islands for them.
-        auto all_nodes = island.nodes;
-        island.nodes = {connected_nodes.begin(), connected_nodes.end()};
-        island.edges = {connected_edges.begin(), connected_edges.end()};
+        auto all_nodes = std::move(island.nodes);
+        island.nodes.insert(connected_nodes.begin(), connected_nodes.end());
+
+        island.edges.clear();
+        island.edges.insert(connected_edges.begin(), connected_edges.end());
 
         auto &stats = m_registry.get<island_stats>(island_entity);
         stats.num_nodes = island.nodes.size();
@@ -1167,7 +1068,7 @@ void island_worker::split_islands() {
             graph.traverse_connecting_nodes(start_node.node_index,
                 [&] (auto node_index) {
                     auto node_entity = graph.node_entity(node_index);
-                    island.nodes.insert(node_entity);
+                    island.nodes.emplace(node_entity);
 
                     auto &resident = resident_view.get<island_resident>(node_entity);
                     resident.island_entity = island_entity;
@@ -1187,7 +1088,7 @@ void island_worker::split_islands() {
                     connected_nodes.push_back(node_entity);
                 }, [&] (auto edge_index) {
                     auto edge_entity = graph.edge_entity(edge_index);
-                    island.edges.insert(edge_entity);
+                    island.edges.emplace(edge_entity);
 
                     auto &resident = resident_view.get<island_resident>(edge_entity);
                     resident.island_entity = island_entity;

@@ -5,6 +5,9 @@
 #include <memory>
 #include <entt/entity/fwd.hpp>
 #include "edyn/comp/tag.hpp"
+#include <entt/signal/sigh.hpp>
+#include "edyn/comp/island.hpp"
+#include "edyn/parallel/island_delta.hpp"
 #include "edyn/parallel/island_worker_context.hpp"
 #include "edyn/parallel/island_delta_builder.hpp"
 #include "edyn/parallel/message.hpp"
@@ -67,10 +70,10 @@ public:
     void on_construct_island_aabb(entt::registry &, entt::entity);
     void on_construct_static_kinematic_tag(entt::registry &, entt::entity);
     void on_destroy_tree_resident(entt::registry &, entt::entity);
+    void on_destroy_contact_manifold(entt::registry &, entt::entity);
 
     void on_destroy_island_worker_resident(entt::registry &, entt::entity);
     void on_destroy_multi_island_worker_resident(entt::registry &, entt::entity);
-    void on_destroy_island(entt::registry &, entt::entity);
     void on_step_update(const message<msg::step_update> &);
     void on_island_transfer_complete(const message<msg::island_transfer_complete> &);
 
@@ -101,6 +104,22 @@ public:
 
     double get_worker_timestamp(size_t worker_index) const;
 
+    auto contact_started_sink() {
+        return entt::sink{m_contact_started_signal};
+    }
+
+    auto contact_ended_sink() {
+        return entt::sink{m_contact_ended_signal};
+    }
+
+    auto contact_point_created_sink() {
+        return entt::sink{m_contact_point_created_signal};
+    }
+
+    auto contact_point_destroyed_sink() {
+        return entt::sink{m_contact_point_destroyed_signal};
+    }
+
 private:
     entt::registry *m_registry;
     std::vector<std::unique_ptr<island_worker_context>> m_worker_ctxes;
@@ -108,6 +127,11 @@ private:
         msg::step_update,
         msg::island_transfer_complete,
         msg::island_transfer_failure> m_message_queue_handle;
+
+    entt::sigh<void(entt::entity)> m_contact_started_signal;
+    entt::sigh<void(entt::entity)> m_contact_ended_signal;
+    entt::sigh<void(entt::entity, contact_manifold::contact_id_type)> m_contact_point_created_signal;
+    entt::sigh<void(entt::entity, contact_manifold::contact_id_type)> m_contact_point_destroyed_signal;
 
     std::vector<entt::entity> m_new_graph_nodes;
     std::vector<entt::entity> m_new_graph_edges;

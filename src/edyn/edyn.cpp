@@ -76,6 +76,7 @@ void step_simulation(entt::registry &registry) {
 void remove_external_components(entt::registry &registry) {
     auto &settings = registry.ctx<edyn::settings>();
     settings.make_island_delta_builder = &make_island_delta_builder_default;
+    settings.index_source.reset(new component_index_source_impl(shared_components));
     registry.ctx<island_coordinator>().settings_changed();
 }
 
@@ -153,6 +154,22 @@ void exclude_collision(entt::registry &registry, entt::entity first, entt::entit
 
 void exclude_collision(entt::registry &registry, entity_pair entities) {
     exclude_collision(registry, entities.first, entities.second);
+}
+
+entt::sink<void(entt::entity)> on_contact_started(entt::registry &registry) {
+    return registry.ctx<island_coordinator>().contact_started_sink();
+}
+
+entt::sink<void(entt::entity)> on_contact_ended(entt::registry &registry) {
+    return registry.ctx<island_coordinator>().contact_ended_sink();
+}
+
+entt::sink<void(entt::entity, contact_manifold::contact_id_type)> on_contact_point_created(entt::registry &registry) {
+    return registry.ctx<island_coordinator>().contact_point_created_sink();
+}
+
+entt::sink<void(entt::entity, contact_manifold::contact_id_type)> on_contact_point_destroyed(entt::registry &registry) {
+    return registry.ctx<island_coordinator>().contact_point_destroyed_sink();
 }
 
 vector3 get_gravity(const entt::registry &registry) {

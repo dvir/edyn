@@ -14,6 +14,7 @@
 #include "math/vector2.hpp"
 #include "math/quaternion.hpp"
 #include "math/matrix3x3.hpp"
+#include "math/transform.hpp"
 #include "math/math.hpp"
 #include "math/geom.hpp"
 #include "time/time.hpp"
@@ -105,19 +106,49 @@ void update(entt::registry &registry);
 void step_simulation(entt::registry &registry);
 
 /**
+ * @brief Get index of a component type among all shared components within the
+ * library. Also supports any registered external component.
+ * @tparam Component The component type.
+ * @param registry Data source.
+ * @return Component index.
+ */
+template<typename Component>
+size_t get_component_index(entt::registry &registry) {
+    auto &settings = registry.ctx<edyn::settings>();
+    return settings.index_source->index_of<Component>();
+}
+
+/*! @copydoc get_component_index */
+template<typename... Component>
+auto get_component_indices(entt::registry &registry) {
+    auto &settings = registry.ctx<edyn::settings>();
+    return settings.index_source->indices_of<Component...>();
+}
+
+/**
  * @brief Registers external components to be shared between island coordinator
  * and island workers.
+ * @remark If you need a component of your own to be available in an external
+ * system, it must be registered using this function. That will ensure the
+ * component is sent to the island workers and is inserted in their private
+ * registry.
  * @tparam Component External component types.
  */
 template<typename... Component>
 void register_external_components(entt::registry &registry) {
     auto &settings = registry.ctx<edyn::settings>();
+
     settings.make_island_delta_builder = [] () {
         auto external = std::tuple<Component...>{};
         auto all_components = std::tuple_cat(shared_components, external);
         return std::unique_ptr<island_delta_builder>(
             new island_delta_builder_impl(all_components));
     };
+
+    auto external = std::tuple<Component...>{};
+    auto all_components = std::tuple_cat(shared_components, external);
+    settings.index_source.reset(new component_index_source_impl(all_components));
+
     registry.ctx<island_coordinator>().settings_changed();
 }
 
@@ -198,7 +229,9 @@ void set_should_collide(entt::registry &registry, should_collide_func_t func);
  */
 template<typename... Component>
 void refresh(entt::registry &registry, entt::entity entity) {
-    registry.ctx<island_coordinator>().refresh<Component...>(entity);
+    if (auto *coordinator = registry.try_ctx<island_coordinator>(); coordinator) {
+        coordinator->refresh<Component...>(entity);
+    }
 }
 
 /**
@@ -239,6 +272,46 @@ void exclude_collision(entt::registry &registry, entt::entity first, entt::entit
 void exclude_collision(entt::registry &registry, entity_pair entities);
 
 /**
+ * @brief Signal triggered when a contact starts.
+ * A contact is considered to start when the first contact point is added to a
+ * manifold, i.e. when the number of points in a manifold becomes greater than
+ * zero.
+ * @param registry Data source.
+ * @return Sink to observe contact started events.
+ */
+entt::sink<void(entt::entity)> on_contact_started(entt::registry &);
+
+/**
+ * @brief Signal triggered when a contact ends.
+ * A contact ends when the last point is destroyed in a contact manifold, i.e.
+ * when the number of points goes to zero, or when a manifold is destroyed due
+ * to AABB separation.
+ * @param registry Data source.
+ * @return Sink to observe contact ended events.
+ */
+entt::sink<void(entt::entity)> on_contact_ended(entt::registry &);
+
+/**
+ * @brief Signal triggered when a contact point is created.
+ * This event is also triggered right after a contact started event, for each
+ * point that the contact has started with.
+ * The signal emits the manifold entity and the contact point id in that manifold.
+ * @param registry Data source.
+ * @return Sink to observe contact point creation events.
+ */
+entt::sink<void(entt::entity, contact_manifold::contact_id_type)> on_contact_point_created(entt::registry &);
+
+/**
+ * @brief Signal triggered when a contact point is destroyed.
+ * This event is also triggered for each contact point before a contact ended
+ * event.
+ * The signal emits the manifold entity and the contact point id in that manifold.
+ * @param registry Data source.
+ * @return Sink to observe contact point destruction events.
+ */
+entt::sink<void(entt::entity, contact_manifold::contact_id_type)> on_contact_point_destroyed(entt::registry &);
+
+/**
  * @brief Visit all edges of a node in the entity graph. This can be used to
  * iterate over all constraints assigned to a rigid body.
  * @remark `contact_constraint`s are not edges in the entity graph. Instead,
@@ -277,12 +350,6 @@ void set_gravity(entt::registry &registry, vector3 gravity);
  * @return Number of solver velocity iterations.
  */
 unsigned get_solver_velocity_iterations(const entt::registry &registry);
-
-/**
- * @brief Set the number of constraint solver velocity iterations.
- * @param registry Data source.
- * @param iterations Number of solver velocity iterations.
- */
 
 /**
  * @brief Set the number of constraint solver velocity iterations.

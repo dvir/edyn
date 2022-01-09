@@ -2,6 +2,7 @@
 #include "edyn/math/math.hpp"
 #include "edyn/math/vector2_3_util.hpp"
 #include "edyn/math/vector3.hpp"
+#include "edyn/math/transform.hpp"
 #include "edyn/util/triangle_util.hpp"
 #include <algorithm>
 
@@ -1171,6 +1172,11 @@ bool intersect_segment_triangle(const vector3 &p0, const vector3 &p1,
         if (std::abs(e) > EDYN_EPSILON) {
             return false;
         }
+    }
+
+    if (t < scalar(0) || t > scalar(1)) {
+        // Ray does not intersect plane.
+        return false;
     }
 
     auto intersection = lerp(p0, p1, t);

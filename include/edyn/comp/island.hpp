@@ -2,9 +2,9 @@
 #define EDYN_COMP_ISLAND_HPP
 
 #include "edyn/comp/aabb.hpp"
-#include "edyn/util/entity_set.hpp"
-#include <entt/entity/fwd.hpp>
 #include <entt/entity/entity.hpp>
+#include <entt/entity/sparse_set.hpp>
+#include <unordered_set>
 #include <optional>
 
 namespace edyn {
@@ -14,8 +14,8 @@ namespace edyn {
  * usually through constraints.
  */
 struct island {
-    entity_set nodes;
-    entity_set edges;
+    entt::sparse_set nodes;
+    entt::sparse_set edges;
     std::optional<double> sleep_timestamp;
 };
 
